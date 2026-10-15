@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.ninebotsign.lsp"
+    android:versionCode="200"
+    android:versionName="2.0">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 只在 Android 9 及以下走「直接写 Pictures 目录」那条退路时用得上 -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <!-- Android 11+ 上要往「九号自己的 Android/data 目录」里写配置，只有这条权限能办到：
+         内容提供者被包可见性挡（Unknown authority），XSharedPreferences 在模块重装后读不到，
+         两条一断，九号进程里的开关就永远是「关」，用户看到的就是「开了没效果」。 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <application
+        android:label="九号自动签到"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:hasCode="true">
+
+        <!-- ===== 设置界面（模块自己的 Activity，桌面图标就指向它）===== -->
+        <activity
+            android:name=".SettingsActivity"
+            android:label="九号自动签到"
+            android:exported="true"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ===== 给注入进九号进程的模块读设置用（Android 11+ 上 XSharedPreferences 常读不到）===== -->
+        <provider
+            android:name=".ConfProvider"
+            android:authorities="com.ninebotsign.lsp.conf"
+            android:exported="true" />
+
+        <!-- ===== 经典 Xposed API 82 模块声明（LSPosed 直接识别）===== -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="九号出行自动签到：打开 app 时在进程内捕获 token/deviceId，之后直接调用签到接口完成每日签到" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:value="cn.ninebot.ninebot" />
+    </application>
+</manifest>

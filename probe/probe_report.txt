@@ -1,0 +1,94 @@
+== 九号签到模块：网络 + 解析代码路径线上验证
+   执行的是与手机模块逐字一致的 http()/respCode()/explain()/deepInt()
+   token 故意无效，只读路由，不提交数据、不改任何状态
+   org.json = org.json:json:20231013 (Android 同款 API)
+
+[A] 对照组 — 假路径 POST（应为 404，证明后面的判据有区分度）
+    HTTP 404  判定: 接口路径不存在（404）
+    原文: {"timestamp":1791975366006,"status":404,"error":"Not Found","path":"/portal/api/user-sign/v2/no-such-path-probe"}
+  [PASS] 假路径被判为「接口路径不存在」
+  [PASS] 假路径 respCode 拿不到 code（-999）   (code=-999)
+
+[B] POST /portal/api/user-sign/v2/sign（真路径 + 无效 token）
+    HTTP 200  判定: 凭据被服务器拒绝（token 无效或不是这个接口认的格式）
+    原文: {"code":1,"msg":"系统错误","key":"response.system.error","t":1791975366502}
+  [PASS] 请求真的发出去了（拿到 HTTP 状态码）   (httpCode=200)
+  [PASS] 响应体不是 EXC（无 SSL/连接异常）   ({"code":1,"msg":"系统错误","key":"response.system.error","t":1791975366502})
+  [PASS] 路径真实，不是 404
+  [PASS] respCode() 能解析出 code   (code=1)
+  [PASS] 无效凭据 → 业务码非 0（不会误判成功）   (code=1)
+
+[C] GET /portal/api/user-sign/v2/status?t=<ms>（真路径 + 无效 token）
+    HTTP 200  判定: 凭据被服务器拒绝（token 无效或不是这个接口认的格式）
+    原文: {"code":1,"msg":"系统错误","key":"response.system.error","t":1791975366972}
+  [PASS] status 走 GET 能拿到响应   (httpCode=200)
+  [PASS] status 路径真实，不是 404
+    注意：无效 token 拿不到 data，所以这次 currentSignStatus=-1（-1 = 没解析到，不是「今天没签」）
+
+[C2] deepInt 取值路径断言（离线，模拟成功响应）
+  [PASS] 从 data 里取到 currentSignStatus=1   (got=1)
+  [PASS] 从 data 里取到 consecutiveDays=7   (got=7)
+    已知局限：字段若嵌到 data.signInfo.* 里，deepInt 取不到 → 返回 -1（-1），只是会多做一次签到、不会误判成功
+  [PASS] 字段在顶层也能取到
+
+[D] POST /portal/api/user-sign/v1/sign（老版本端点）
+    HTTP 200  判定: 凭据被服务器拒绝（token 无效或不是这个接口认的格式）
+    原文: {"code":1,"msg":"系统错误","key":"response.system.error","t":1791975367450}
+  [PASS] v1 端点存在（不是 404）
+
+[E] POST https://api5-h5-app-bj.ninebot.com/portal/api/user-sign/v2/sign（兜底主机）
+    HTTP 200  判定: 凭据被服务器拒绝（token 无效或不是这个接口认的格式）
+    原文: {"code":1,"msg":"系统错误","key":"response.system.error","t":1791975368156}
+  [PASS] 兜底网关可用且路径真实   (httpCode=200)
+
+[F] Bearer 前缀对照（同一串**无效** token，加前缀 vs 不加）
+    不加前缀: code=1  凭据被服务器拒绝（token 无效或不是这个接口认的格式）
+    加 前缀 : code=1  凭据被服务器拒绝（token 无效或不是这个接口认的格式）
+    ↑ 这一节**不能**用来判定前缀要不要加：无效 token 先被鉴权挡掉，
+      两种写法的差异被同一个错误码淹没（lesson：无效凭据做对照没有区分度）。
+      前缀的最终结论来自另外两处证据：
+        1) 真机日志 —— 同一个真实 591 字符 JWT，裸 token 让 status 返 code 0、
+           v2/sign 返 540004；加 `Bearer ` 立刻变 code 1。
+        2) 签到页自己的 JS —— Authorization 取 sessionStorage 的 LOGIN_TOKEN 原值。
+  [PASS] 两种写法在无效凭据下响应码相同（说明此处无区分度，非结论）   (裸=1 带前缀=1)
+
+[G] looksJwt 判定
+  [PASS] 三段式且长度>40 → true
+  [PASS] 普通短串 → false
+  [PASS] 两段式 → false
+
+[H] addJwtCandidates 抠 URL 里的凭据
+    抠出 2 个: [eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnopqrstuvwxyz, Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijklmnopqrstuvwxyz]
+  [PASS] 抠出了 token 且自动带/去 Bearer 两个变体   (size=2)
+
+[I] rewardSummary() —— 奖励字段名来自签到页自己的 JS，不是猜的
+  [PASS] rewardType=2 → 读出 N币数额（10 N币）   ([，获得 10 N币])
+  [PASS] 多项奖励用 + 连接（经验值/勋章/补签卡/商城券都认）   ([，获得 5 经验值 + 连续签到勋章 + 1 张补签卡 + 商城兑换券])
+  [PASS] 未知 rewardType 回退到 name 字段   ([，获得 X])
+  [PASS] 没有 rewardList 时返回空串且不抛异常
+  [PASS] 响应体是 HTML 时返回空串且不抛异常
+  [PASS] rewardList 为空数组时返回空串
+
+[I2] explain() 对签到页里两个写死分支的判读
+  [PASS] 540004 → 判为「今日已签到」（签到页自己也是直接 return）   (今日已签到（服务端明确回绝，属正常）)
+  [PASS] 54019 → 判为「会话失效」（签到页的做法是 location.reload()）   (会话失效，需要重新登录（当前 token 过期）)
+  [PASS] 真机那次的状态响应仍判为「成功」   (成功)
+
+[I3] 签到请求体形状与签到页一致
+  [PASS] body 只有 deviceId 一个键（签到页发的是 {deviceId:e}）   (keys=[deviceId])
+
+[J] 漂移检查 —— probe 里的请求头/判读必须与 module 源码一致
+    读模块源码: 47131 字符
+  [PASS] 读到了模块源码
+  [PASS] 请求头 device_id 两边都在   (模块=true probe=true)
+  [PASS] 请求头 deviceId 两边都在   (模块=true probe=true)
+  [PASS] 请求头 platform 两边都在   (模块=true probe=true)
+  [PASS] 请求头 sys_language 两边都在   (模块=true probe=true)
+  [PASS] 请求头 from_platform_1 两边都在   (模块=true probe=true)
+  [PASS] 请求头 language 两边都在   (模块=true probe=true)
+  [PASS] 请求头 Authorization 两边都在   (模块=true probe=true)
+  [PASS] 540004 分支两边都在
+  [PASS] 54019 分支两边都在
+  [PASS] rewardSummary 两边都在
+
+== 汇总: PASS 40 / FAIL 0

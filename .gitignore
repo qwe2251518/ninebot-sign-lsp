@@ -1,0 +1,31 @@
+# 构建产物
+build/
+probe/out/
+build_log*.txt
+*.class
+
+# 反编译侦察资料（53 MB，含他人 App 的类表/字符串，不公开）
+recon/
+
+# 真机日志与凭据（绝不入库）
+*.log
+*.ok
+ninebot-sign.conf
+vehicle.png
+
+# 签名文件与发布产物（APK 走 Releases 发布）
+*.keystore
+*.jks
+*.apk
+*.idsig
+
+# 原始模板残留（整理或注明来源前不提交）
+_template-byd/
+
+# 临时文件与编辑器
+_tmp*.txt
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+probe/*/

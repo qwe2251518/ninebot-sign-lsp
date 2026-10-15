@@ -1,0 +1,81 @@
+== 模块 http() 真正发出去的请求（本地回环抓包）
+   被测代码 = module/src/com/ninebotsign/lsp/SignHook.java 本身
+   这一步补的盲区：以前只证明「服务器没拒绝」，没证明「我们发的头对不对」
+
+[1] POST 签到请求：逐个头核对
+    抓到的请求头：
+      accept: application/json, text/plain, */*
+      accept-language: zh-CN,zh;q=0.9,en;q=0.8
+      authorization: eyJhbGciOiJIUzI1NiJ9.probe.token
+      connection: keep-alive
+      content-length: 47
+      content-type: application/json;charset=UTF-8
+      device_id: probe-device-id-0123456789abcdef
+      deviceid: probe-device-id-0123456789abcdef
+      from_platform_1: 1
+      host: 127.0.0.1:57906
+      language: zh
+      platform: h5
+      referer: https://h5-bj.ninebot.com/
+      sys_language: zh-CN
+      uid: 100000001
+      user-agent: Mozilla/5.0 (iPhone; CPU iPhone OS 15_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Segway v6 C 609033420
+    body: {"deviceId":"probe-device-id-0123456789abcdef"}
+
+  [PASS] 方法 = POST   (got=POST)
+  [PASS] Authorization 就是 token 原文（不加 Bearer）   (got=eyJhbGciOi….token (len=32))
+  [PASS] Authorization 里没有 Bearer 前缀
+  [PASS] device_id（下划线）= deviceId   (probe-device-id-0123456789abcdef)
+  [PASS] deviceId（驼峰）= deviceId   (probe-device-id-0123456789abcdef)
+  [PASS] uid 头带上了   (100000001)
+  [PASS] platform = h5   (h5)
+  [PASS] language = zh   (zh)
+  [PASS] sys_language = zh-CN   (zh-CN)
+  [PASS] from_platform_1 = 1   (1)
+  [PASS] Origin 被 JDK 受限头策略丢掉（模块的调用没写错，见下方说明）   (got=null)
+    说明：模块确实调用了 setRequestProperty("Origin", ...)，但桌面 JDK 会吞掉它。
+    这次带上 -Dsun.net.http.allowRestrictedHeaders=true 再跑一遍，就能证明调用本身是对的。
+    Android 的 HttpURLConnection 是 OkHttp 实现，**不一定**同样吞掉 Origin；但真机日志里的 status 返回 code 0 已经证明这个头不是必需的（缺了也能通过）。
+  [PASS] Referer = https://h5-bj.ninebot.com/   (https://h5-bj.ninebot.com/)
+  [PASS] User-Agent 与一手证据一致   (Mozilla/5.0 (iPhone; CPU iPhone OS 15_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Segway v6 C 609033420)
+  [PASS] Content-Type 是 json   (application/json;charset=UTF-8)
+  [PASS] Accept 与页面一致   (application/json, text/plain, */*)
+  [PASS] body 就是 {"deviceId":"..."}   ({"deviceId":"probe-device-id-0123456789abcdef"})
+    参考（模块没有显式设置，交给平台自己处理）：Accept-Encoding = <缺失>
+  [PASS] 响应 200 + code 0 → 判为成功   (成功)
+
+[2] auth = null / uid 为空时的边界
+  [PASS] auth=null → 不发 Authorization 头   (headers=[referer, content-length, accept-language, device_id, language, deviceid, platform, accept, sys_language, uid, host, connection, content-type, from_platform_1, user-agent])
+  [PASS] uid 为空 → 不发 uid 头
+
+[3] status 那种 GET
+  [PASS] 方法 = GET   (got=GET)
+  [PASS] 查询串原样保留   (got=/capture?t=1791975339250)
+  [PASS] GET 没有 body   ([])
+  [PASS] GET 也带 Authorization
+
+[4] 服务端各种脸色下的行为
+  [PASS] 404 → httpCode 404   (got=404)
+  [PASS] 404 → 错误流也读得到内容   ([{"timestamp":1,"status":404,"error":"Not Found","path":"/capture"}])
+  [PASS] 404 → 判为路径不存在
+  [PASS] 403 HTML → 不判成功   (未知签名，把原文发我)
+  [PASS] 403 HTML → respCode -999
+  [PASS] 403 HTML → 奖励为空且不抛异常
+  [PASS] 500 → httpCode 500   (got=500)
+  [PASS] 500 → 判为凭据被拒（不是成功）   (凭据被服务器拒绝（token 无效或不是这个接口认的格式）)
+
+[5] 服务器扮演「签到成功」，看模块的判读链能不能读出奖励
+    响应: {"code":0,"msg":"Success","data":{"consecutiveDays":3,"currentSignStatus":1,"rewardList":[{"rewardType":2,"rewardValue":10},{"rewardType":4,"rewardValue":1}]}}
+  [PASS] HTTP 200   (got=200)
+  [PASS] code = 0   (code=0)
+  [PASS] explain = 成功   (成功)
+  [PASS] currentSignStatus = 1
+  [PASS] consecutiveDays = 3
+    奖励解析: [，获得 10 N币 + 1 张补签卡]
+  [PASS] 奖励解析出 10 N币 + 1 张补签卡   (，获得 10 N币 + 1 张补签卡)
+
+[6] 打不通的地址
+  [PASS] 连接失败 → httpCode -1、body 以 EXC 开头（不抛异常）   (http=-1)
+  [PASS] 连接失败 → 判为「请求根本没发出去」   (请求根本没发出去（异常见上）)
+
+== 汇总: PASS 39 / FAIL 0
