@@ -1,15 +1,15 @@
 九号自动签到 —— 设置界面 → ninebot-sign.conf 离线验证
 
 -- 1. 都关（默认） --
-# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=0\n
+# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=0\nfakeExpiry=0\n
   [PASS] 第一行是 '#' 表头   (# 由「九号自动签到」设置界面生成；想手动改配置)
   [PASS] 关掉车图时写 vehicleImage=0
   [PASS] 车图关时不写 vehicleImagePath
   [PASS] 文本以换行结尾、没有 CR
-  [PASS] 没有多余空行   (lines=3)
+  [PASS] 没有多余空行   (lines=4)
 
 -- 2. 车图开（含自定义路径） --
-# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=1\nvehicleImagePath=/sdcard/Pictures/car.png\n
+# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=1\nvehicleImagePath=/sdcard/Pictures/car.png\nfakeExpiry=0\n
   [PASS] 车图开写成 vehicleImage=1   (1)
   [PASS] 自定义图片路径写入   (/sdcard/Pictures/car.png)
   [PASS] 键名全是小写比较能命中（配置读回时按小写匹配）
@@ -19,9 +19,9 @@
   [PASS] vehicleImage=1 仍在
 
 -- 5. 值里的换行 / 首尾空格 --
-# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=1\nvehicleImagePath=/sdcard/ab.png\n
+# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=1\nvehicleImagePath=/sdcard/ab.png\nfakeExpiry=0\n
   [PASS] 路径首尾空格被去掉、里头的换行被拍掉   (/sdcard/ab.png)
-  [PASS] 行数没有因为注入的换行变多   (lines=4)
+  [PASS] 行数没有因为注入的换行变多   (lines=5)
 
 -- 6. uiOn / uiNz 的真值判断 --
   [PASS] uiOn("1")
@@ -42,15 +42,19 @@
   [PASS] 关掉签到不影响其它键（车图仍会写）   (# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行
 signEnabled=0
 vehicleImage=0
+fakeExpiry=0
 )
   [PASS] confOn 的真值判断认得 0/false/off
   [PASS] 老配置（没有这个键）按「开」处理   (1)
 
--- 9. 动能回收 venergy（关闭 off / 弱 weak / 标准 standard） --
-  [PASS] 选「关闭」时写 venergy=off   (off)
-  [PASS] 选「不管」时不写这一行（注入端就不会碰车）
-  [PASS] venergy 与签到/车图互不影响
-  [PASS] venergy 的三种取值都能原样落进配置
+-- 9. 有效期显示为 9999（显示层，只看样子） --
+  [PASS] 开关打开时写 fakeExpiry=1   (1)
+  [PASS] 没开时写 fakeExpiry=0   (0)
+  [PASS] fakeExpiry 与签到/车图互不影响
+  [PASS] 带日期的有效期 → 换成 9999.12.31   (服务有效期：9999.12.31)
+  [PASS] 横杠日期也认   (有效期至 9999-12-31)
+  [PASS] 没有「有效期」三个字就不动
+  [PASS] 已经是 9999 就不再改（不会递归）
 
 -- 10. 设置界面不能碰 Xposed 类（2026-10-15 真机闪退的根因） --
   [PASS] SignHook.uiConfText 与 ConfText.build 结果一致（同一份逻辑）
@@ -65,7 +69,7 @@ vehicleImage=0
 
 -- 11. conf() 叠加界面设置（真机写不进 ninebot-sign.conf 时的保底） --
   [PASS] parseConfText 跳过注释/空行   (size=3)
-  [PASS] parseConfText 取到 venergy=off   (off)
+  [PASS] parseConfText 取到 fakeExpiry=1   (1)
   [PASS] parseConfText 取到 signEnabled=1   (1)
 
 -- 12. 相册选图（走内容提供者取图，不再拷公共相册） --
@@ -73,6 +77,7 @@ vehicleImage=0
 signEnabled=1
 vehicleImage=1
 vehicleImageStamp=12345-1700000000
+fakeExpiry=0
 )
   [PASS] 车图开关关掉时不写 vehicleImageStamp
   [PASS] 开关开着但没在相册选过图 → 不写这一行
@@ -81,4 +86,4 @@ vehicleImageStamp=12345-1700000000
   [PASS] 注入端车图开关走 conf()（不再只读 ninebot-sign.conf 文件）
   [PASS] 注入端从内容提供者把图取回来
   [PASS] 模块日志同时写进 logcat（adb logcat -s NinebotSign 直接看）
-== 结果：PASS=51 FAIL=0 ==
+== 结果：PASS=54 FAIL=0 ==

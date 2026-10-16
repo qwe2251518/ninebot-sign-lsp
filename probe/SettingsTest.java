@@ -137,7 +137,7 @@ public class SettingsTest {
         check("关掉车图时写 vehicleImage=0", parse(t1).get("vehicleimage").equals("0"), null);
         check("车图关时不写 vehicleImagePath", !t1.contains("vehicleImagePath"), null);
         check("文本以换行结尾、没有 CR", t1.endsWith("\n") && !t1.contains("\r"), null);
-        check("没有多余空行", countLines(t1) == 3, "lines=" + countLines(t1));
+        check("没有多余空行", countLines(t1) == 4, "lines=" + countLines(t1));
 
         // ------------------------------------------------------------------
         say("");
@@ -172,7 +172,7 @@ public class SettingsTest {
         Map<String, String> p5 = parse(t5);
         check("路径首尾空格被去掉、里头的换行被拍掉",
                 "/sdcard/ab.png".equals(p5.get("vehicleimagepath")), p5.get("vehicleimagepath"));
-        check("行数没有因为注入的换行变多", countLines(t5) == 4, "lines=" + countLines(t5));
+        check("行数没有因为注入的换行变多", countLines(t5) == 5, "lines=" + countLines(t5));
 
         // ------------------------------------------------------------------
         say("");
@@ -222,28 +222,31 @@ public class SettingsTest {
         check("老配置（没有这个键）按「开」处理", "1".equals(parse(tsOld).get("signenabled")), parse(tsOld).get("signenabled"));
 
         say("");
-        say("-- 9. 动能回收 venergy（关闭 off / 弱 weak / 标准 standard） --");
+        say("-- 9. 有效期显示为 9999（显示层，只看样子） --");
         Map<String, String> me1 = conf();
-        me1.put("venergy", "off");
+        me1.put("fakeExpiry", "1");
         String te1 = SignHook.uiConfText(me1);
-        check("选「关闭」时写 venergy=off", "off".equals(parse(te1).get("venergy")), parse(te1).get("venergy"));
+        check("开关打开时写 fakeExpiry=1", "1".equals(parse(te1).get("fakeexpiry")), parse(te1).get("fakeexpiry"));
         Map<String, String> me2 = conf();
-        me2.remove("venergy");
+        me2.remove("fakeExpiry");
         String te2 = SignHook.uiConfText(me2);
-        check("选「不管」时不写这一行（注入端就不会碰车）", te2.indexOf("venergy=") < 0, null);
-        check("venergy 与签到/车图互不影响",
+        check("没开时写 fakeExpiry=0", "0".equals(parse(te2).get("fakeexpiry")), parse(te2).get("fakeexpiry"));
+        check("fakeExpiry 与签到/车图互不影响",
                 te1.contains("vehicleImage=") && te1.contains("signEnabled="), null);
-        Map<String, String> me3 = conf();
-        me3.put("venergy", "weak");
-        Map<String, String> me4 = conf();
-        me4.put("venergy", "standard");
-        check("venergy 的三种取值都能原样落进配置",
-                "weak".equals(parse(SignHook.uiConfText(me3)).get("venergy"))
-                        && "standard".equals(parse(SignHook.uiConfText(me4)).get("venergy")), null);
+        check("带日期的有效期 → 换成 9999.12.31",
+                "服务有效期：9999.12.31".equals(SignHook.expiryText("服务有效期：2027.02.22")),
+                SignHook.expiryText("服务有效期：2027.02.22"));
+        check("横杠日期也认",
+                "有效期至 9999-12-31".equals(SignHook.expiryText("有效期至 2019-05-01")),
+                SignHook.expiryText("有效期至 2019-05-01"));
+        check("没有「有效期」三个字就不动",
+                SignHook.expiryText("骑行里程 2027.02.22") == null, null);
+        check("已经是 9999 就不再改（不会递归）",
+                SignHook.expiryText("服务有效期：9999.12.31") == null, null);
         say("");
         say("-- 10. 设置界面不能碰 Xposed 类（2026-10-15 真机闪退的根因） --");
         Map<String, String> m13 = conf();
-        m13.put("venergy", "standard");
+        m13.put("fakeExpiry", "1");
         check("SignHook.uiConfText 与 ConfText.build 结果一致（同一份逻辑）",
                 SignHook.uiConfText(m13).equals(ConfText.build(m13)), null);
         String actCode = noComments(slurp("module/src/com/ninebotsign/lsp/SettingsActivity.java"));
@@ -273,9 +276,9 @@ public class SettingsTest {
         say("");
         say("-- 11. conf() 叠加界面设置（真机写不进 ninebot-sign.conf 时的保底） --");
         Map<String, String> pc = SignHook.parseConfText(
-                "# 由设置界面生成\nsignEnabled=1\nvenergy=off\n\nveh=0");
+                "# 由设置界面生成\nsignEnabled=1\nfakeExpiry=1\n\nveh=0");
         check("parseConfText 跳过注释/空行", pc.size() == 3, "size=" + pc.size());
-        check("parseConfText 取到 venergy=off", "off".equals(pc.get("venergy")), pc.get("venergy"));
+        check("parseConfText 取到 fakeExpiry=1", "1".equals(pc.get("fakeExpiry")), pc.get("fakeExpiry"));
         check("parseConfText 取到 signEnabled=1", "1".equals(pc.get("signEnabled")), pc.get("signEnabled"));
 
         say("");

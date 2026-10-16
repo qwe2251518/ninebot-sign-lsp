@@ -24,6 +24,7 @@ _template-byd/
 
 # 临时文件与编辑器
 _tmp*.txt
+_tmp*/
 Thumbs.db
 Desktop.ini
 .vscode/

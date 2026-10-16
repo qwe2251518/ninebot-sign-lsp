@@ -41,25 +41,6 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
-/**
- * 九号出行（cn.ninebot.ninebot）自动签到模块。
- *
- * 形态 B：打开 app 时自动签到。签到接口本身不在 APK 的原生代码里（已用自写 DEX 解析器
- * 全量核对：22 个 dex / 91.5 万条字符串 / 82,059 个类中不存在 user-sign、portal/api、
- * consecutiveDays 等任何签到痕迹；签到页是 H5/RN 远端页面），所以模块采用
- * 「进程内捕获凭据 -> 自己发请求」的做法：
- *
- *   1. 捕获 deviceId（BodyParametersProvider / NbHttpClient#setDeviceId）
- *   2. 捕获 token（NbHttpClient#setToken、CommonModule#syncToken 的 access_token）
- *   3. 捕获 app 真实使用的 Authorization（TokenInterceptor#intercept 里读请求头）
- *   4. 捕获 H5 的 JWT 载体（NbHttpClient#getH5BaseJwtUrl、NbH5UrlHelper#getJwtWholeUrl）
- *   5. 凭据齐了就把候选 Authorization 逐个拿去打签到接口，谁返回 code==0 就用谁
- *
- * 签到接口来自第三方开源脚本（waistu/Ninebot）：
- *   POST https://cn-cbu-gateway.ninebot.com/portal/api/user-sign/v2/sign
- *   body {"deviceId":"<deviceId>"}
- *   header 需要 Authorization / deviceId / language: zh / Origin+Referer: h5-bj.ninebot.com
- */
 public class SignHook implements IXposedHookLoadPackage {
 
     static final String TAG = "NinebotSign: ";
@@ -70,65 +51,50 @@ public class SignHook implements IXposedHookLoadPackage {
     static final String URL_SIGN_V1 = GW + "/portal/api/user-sign/v1/sign";
     static final String URL_STATUS = GW + "/portal/api/user-sign/v2/status";
 
-    /**
-     * H5 页面的后端网关（assets/Server.json 里的 web_url_v1 → production api5-h5-app-bj）。
-     * 2026-10 实测：这个主机同样提供 /portal/api/user-sign/v2/sign（无效 token 返回
-     * code 1 system.error，假路径返回 404 对照），而且 status 端点用 POST 打会返回
-     * code 4 "method error" —— 说明路径真实且只收 GET。所以它是 v1/v2 都失败后的最后一张牌。
-     */
     static final String GW_H5 = "https://api5-h5-app-bj.ninebot.com";
 
-    /** 第三方脚本实测可用的 H5 客户端 UA */
     static final String UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 15_1 like Mac OS X) "
             + "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Segway v6 C 609033420";
 
-    // ---------------- 运行时捕获到的凭据 ----------------
     static volatile Context appCtx;
     static volatile boolean isMainProcess;
     static volatile boolean appStarted;
 
-    static volatile String deviceId;    // BodyParametersProvider / NbHttpClient#setDeviceId
-    static volatile String uid;         // BodyParametersProvider#setUid
+    static volatile String deviceId;
+    static volatile String uid;
 
-    static volatile String token;       // NbHttpClient#setToken（原生层保存的 access_token）
-    static volatile String rnToken;     // CommonModule#syncToken 传给 RN 的 access_token
-    static volatile String passportToken; // PassportApiClient#getAccessToken / saveToken（护照层 access_token）
-    static volatile String authHeader;  // RealInterceptorChain#proceed 读到的「最终」Authorization
-    static volatile String gwAuthHeader; // 同上，但只取目标是 ninebot 域名的请求（最贴近网关口径）
+    static volatile String token;
+    static volatile String rnToken;
+    static volatile String passportToken;
+    static volatile String authHeader;
+    static volatile String gwAuthHeader;
 
-    static volatile String jwtBase;     // NbHttpClient#getH5BaseJwtUrl 返回值
-    static volatile String jwtWhole;    // NbH5UrlHelper#getJwtWholeUrl 返回值
-    static volatile String webUrl;      // WebView#loadUrl 打开的 H5 页面地址（含签到页）
+    static volatile String jwtBase;
+    static volatile String jwtWhole;
+    static volatile String webUrl;
     static final Set<String> seenWebUrls = new LinkedHashSet<String>();
 
-    /** 当前前台 Activity 名（图片诊断用：判断这条图片是不是主页加载的） */
     static volatile String curActivity = "?";
-    /** 图片诊断去重集合与总量上限（诊断用，不能把日志刷爆） */
+
     static final Set<String> seenImages = new LinkedHashSet<String>();
     static final int IMG_LOG_MAX = 300;
 
-    // ---- 主页车辆图替换（第八轮第二步）----
-    /** 车辆图 URL 的特征：Glide 从 oms-oss-public 的 device-config 拉车型图 */
     static final String VEH_IMG_KEY = "device-config";
-    /** 配置文件里的开关 / 图片绝对路径（每 5 秒最多重读一次，改完不用重启 app） */
+
     static volatile boolean vehImgOn = false;
     static volatile String vehImgPath = null;
     static volatile long vehConfAt = 0L;
-    /** 配置里写的源图路径；真正喂给 Glide 的是按内容命名的副本，见 effectiveVehPath */
+
     static volatile String vehSrcPath = null;
 
-    /** 是否正有一次签到在跑（避免并发重复请求） */
     static final AtomicBoolean inFlight = new AtomicBoolean(false);
-    /** 上次发起签到的毫秒时刻，用于限速（避免每次 onResume 都真的打接口） */
+
     static volatile long lastAttemptAt = 0L;
-    /** 今天已确认「无需签到」，只提示/记录一次 */
+
     static volatile boolean quietToday = false;
 
     static final Set<String> hookLog = new LinkedHashSet<String>();
 
-    // =========================================================================
-    // 入口
-    // =========================================================================
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
         if (!PKG.equals(lp.packageName)) {
@@ -142,8 +108,8 @@ public class SignHook implements IXposedHookLoadPackage {
         hookImageDiag(lp);
         hookVehicleCmds(lp);
         hookConfigDump(lp);
+        hookFakeExpiry(lp);
 
-        // ---- deviceId / uid ----
         hook(lp, "cn.ninebot.commonlibs.nbnet.BodyParametersProvider", "setDeviceId",
                 new Arg0Saver(new Sink() {
                     public void put(String v) { deviceId = v; }
@@ -157,18 +123,11 @@ public class SignHook implements IXposedHookLoadPackage {
                     public void put(String v) { uid = v; }
                 }, "uid"));
 
-        // ---- token ----
         hook(lp, "cn.ninebot.commonlibs.nbnet.NbHttpClient", "setToken",
                 new Arg0Saver(new Sink() {
                     public void put(String v) { token = v; }
                 }, "token(NbHttpClient#setToken)"));
 
-        // ---- 护照层 token ----
-        // PassportApiClient 内部有 accessToken/refreshToken 两个字段，getAccessToken() 是唯一的
-        // 读取口（方法体里引用字符串常量 "access_token"），saveToken(String,String) 是写入口
-        // （args[0] 就是 access_token）。generateAuthorizationHeaders(String, Map) 方法体里只引用
-        // 了常量 "Authorization"，也就是说它把传进来的字符串**原样**放进请求头，九号自己的代码
-        // 不加 "Bearer " 前缀（整个 APK 里 "Bearer " 只出现在华为 AGC SDK 里）。
         hook(lp, "cn.ninebot.lib.passport.account.PassportApiClient", "getAccessToken",
                 new XC_MethodHook() {
                     @Override
@@ -204,17 +163,12 @@ public class SignHook implements IXposedHookLoadPackage {
                                 log("捕获 rnToken=" + mask(rnToken));
                             }
                         } catch (Throwable t) {
-                            // RN 没传 access_token 时会抛 NoSuchKey，属正常
+
                         }
                         maybeSign();
                     }
                 });
 
-        // ---- 出网请求真身：okhttp 的 RealInterceptorChain#proceed(Request) ----
-        // 这是「请求头已经拼完、马上就要发出去」的那一刻，能直接读到最终 Authorization。
-        // 比拦截单个 Interceptor 可靠：TokenInterceptor 是 newBuilder().header(...) 之后才
-        // proceed 的，在它自己的 afterHookedMethod 里读 chain.request() 拿到的是「改之前的」
-        // 原始请求，通常根本没有 Authorization。
         hook(lp, "okhttp3.internal.http.RealInterceptorChain", "proceed",
                 new XC_MethodHook() {
                     @Override
@@ -224,9 +178,7 @@ public class SignHook implements IXposedHookLoadPackage {
                             Object h = XposedHelpers.callMethod(req, "header", "Authorization");
                             if (h instanceof String && ((String) h).length() > 0) {
                                 String s = (String) h;
-                                // 宿主里还跑着微信/QQ/微博/华为 AGC 这些 SDK，它们各自的
-                                // Authorization（甚至 Bearer xxx）不是我们要的。只认目标是
-                                // ninebot 域名的那份 —— 它跟签到走的同一个网关，口径最接近。
+
                                 String host = "";
                                 try {
                                     Object url = XposedHelpers.callMethod(req, "url");
@@ -259,7 +211,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ---- 护照层自己生成的 Authorization（generateAuthorizationHeaders 返回 Map）----
         hook(lp, "cn.ninebot.lib.passport.account.PassportApiClient", "generateAuthorizationHeaders",
                 new XC_MethodHook() {
                     @Override
@@ -283,7 +234,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ---- app 真实使用的 Authorization（最可靠的一手凭据）----
         hook(lp, "cn.ninebot.lib.passport.account.TokenInterceptor", "intercept",
                 new XC_MethodHook() {
                     @Override
@@ -305,7 +255,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ---- H5 JWT 载体 ----
         hook(lp, "cn.ninebot.commonlibs.nbnet.NbHttpClient", "getH5BaseJwtUrl",
                 new XC_MethodHook() {
                     @Override
@@ -352,7 +301,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ---- H5 JS Bridge：用来发现签到页真正的接口路径（诊断用）----
         hook(lp, "cn.ninebot.support.web.JsInterfaceImpl", "interactiveWithAndroid",
                 new XC_MethodHook() {
                     @Override
@@ -372,11 +320,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ---- WebView 打开的 H5 页面地址 ----
-        // 用户点开「签到」页时，这里能直接把那个页面的 URL 打出来。
-        // 拿到 URL 就能在电脑上把那个页面的 JS 抓下来读，从而知道它到底调了哪个接口、
-        // 怎么解析响应 —— 这是把「抄来的接口」换成「app 自己用的接口」的最短路径。
-        // 只记前 15 个不同的 URL（不然每次 H5 跳转都写一行，日志会被刷爆）。
         hook(lp, "android.webkit.WebView", "loadUrl",
                 new XC_MethodHook() {
                     @Override
@@ -396,9 +339,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ---- hook 安装汇总 ----
-        // 一次真机运行就能看出有没有哪个目标没挂上：九号版本一变/加固一换，
-        // 这里会立刻变成 FAIL，而不是让模块静悄悄地什么都不做。
         int okN = 0, failN = 0;
         for (String s : hookLog) {
             if (s.startsWith("OK ")) {
@@ -411,10 +351,6 @@ public class SignHook implements IXposedHookLoadPackage {
                 + (failN == 0 ? "" : "（失败明细见上面的 hook 失败 行）"));
     }
 
-    /**
-     * 拿到 Application 上下文，用于 Toast 与写日志文件；
-     * 顺便挂一个延迟自检，hook 全部落空时能立刻从日志看出来。
-     */
     private void hookApplicationContext(final XC_LoadPackage.LoadPackageParam lp) {
         try {
             XposedHelpers.findAndHookMethod(android.app.Instrumentation.class,
@@ -436,16 +372,8 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 形态 B 的关键：**每次「打开 app」都要有机会签到**，而不只是冷启动那一次。
-     *
-     * 只挂 Instrumentation#callApplicationOnCreate 的话，进程是从冷启动起来的才会触发；
-     * 用户从后台切回来（暖启动）时什么都不会发生 —— 那就不是「每次打开 app 自动签到」了。
-     * 所以再挂 Activity 的生命周期：每次有页面回到前台就试一次，由 maybeSign() 里的
-     * 「当日已签到文件 + 120 秒限速」保证不会重复打接口。
-     */
     private void hookLifecycle(final XC_LoadPackage.LoadPackageParam lp) {
-        // Activity 回到前台 -> 再武装一次
+
         try {
             XposedHelpers.findAndHookMethod(android.app.Activity.class, "onResume",
                     new XC_MethodHook() {
@@ -468,7 +396,6 @@ public class SignHook implements IXposedHookLoadPackage {
             log("hook Activity#onResume 失败: " + t);
         }
 
-        // Application#onCreate：万一 callApplicationOnCreate 没挂上，这里兜住上下文
         try {
             XposedHelpers.findAndHookMethod(android.app.Application.class, "onCreate",
                     new XC_MethodHook() {
@@ -511,7 +438,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }).start();
     }
 
-    /** 当前进程名（读 /proc/self/cmdline），只为让日志能自证「这条来自哪个进程」 */
     static String procName() {
         FileInputStream in = null;
         try {
@@ -538,17 +464,12 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    // =========================================================================
-    // 触发签到
-    // =========================================================================
-    /** 同一进程内两次真正尝试之间的最小间隔：失败后重开 app 会重试，但不会刷接口 */
     static final long RETRY_INTERVAL_MS = 120000L;
 
     static void maybeSign() {
-        // 设置界面存下的配置优先落盘（写成九号那边的 ninebot-sign.conf），
-        // 必须在下面任何读配置的动作之前；没保存过就什么都不做。
+
         syncUiConf();
-        // 设置界面里的「自动签到」开关（配置文件的 signEnabled，缺省为开）
+
         if (!confOn("signEnabled", true)) {
             if (!signOffLogged) {
                 signOffLogged = true;
@@ -556,15 +477,14 @@ public class SignHook implements IXposedHookLoadPackage {
             }
             return;
         }
-        // 不限制进程：九号 app 有多个进程，凭据在哪个进程里初始化不确定。
-        // 重复签到请求是无害的（接口幂等），而「因为跑错进程所以啥也不干」是致命的。
+
         if (deviceId == null || deviceId.length() == 0) {
             return;
         }
         if (token == null && authHeader == null && rnToken == null && passportToken == null) {
             return;
         }
-        // 先做便宜的检查，最后才碰文件（onResume 是主线程调过来的）
+
         if (inFlight.get()) {
             return;
         }
@@ -625,11 +545,6 @@ public class SignHook implements IXposedHookLoadPackage {
             log("jwtBase  = " + clip(jwtBase, 300));
             log("jwtWhole = " + clip(jwtWhole, 300));
 
-            // 先查状态：确认「今天就别签了」就收工。
-            // 只在响应明确可解析（HTTP 200 且 code==0 且 currentSignStatus==1）时才跳过，
-            // 解析不出来就照签不误 —— 宁可多签一次，不可误判漏签。
-            // 凭据优先级：真机日志（2026-10-14）证实「原生 setToken 抓到的裸 token」能让 status
-            // 返回 code 0，所以它排第一；其余按可能性依次垫后。
             Resp st = http("GET", URL_STATUS + "?t=" + System.currentTimeMillis(), null,
                     firstNonNull(firstNonNull(firstNonNull(token, gwAuthHeader), authHeader),
                             passportToken));
@@ -659,10 +574,6 @@ public class SignHook implements IXposedHookLoadPackage {
                 return;
             }
 
-            // 真机日志结论（2026-10-14）：同一个裸 token，不带前缀时 status 返 code 0、
-            // v2/sign 返 540004「already signed in」；加上 "Bearer " 之后变成 code 1 系统错误。
-            // 所以把所有裸 token 排在前面、Bearer 变体垫底：既不浪费请求，也不会让 Bearer 的
-            // 失败把真结果盖住。
             List<String> rawList = new ArrayList<String>();
             List<String> bearerList = new ArrayList<String>();
             for (String c : cands) {
@@ -685,7 +596,7 @@ public class SignHook implements IXposedHookLoadPackage {
                     break;
                 }
                 if (i > 1) {
-                    // 别把网关当靶子打：两次尝试之间缓一下，避免被限流误判成失败
+
                     sleepQuiet(350);
                 }
                 Resp r = http("POST", URL_SIGN_V2, json, cand);
@@ -696,7 +607,7 @@ public class SignHook implements IXposedHookLoadPackage {
                     return;
                 }
                 if (isAlreadySigned(r.body)) {
-                    // 服务端明说了「今天签过了」：这不是失败，别误报
+
                     log("服务端判定今日已签到（原文见上），按已签到处理");
                     markOkToday();
                     toast("九号签到：今日已签到");
@@ -706,7 +617,6 @@ public class SignHook implements IXposedHookLoadPackage {
 
             String first = ordered.get(0);
 
-            // v2 全失败，试老版本端点（老 app 走 v1）
             sleepQuiet(350);
             Resp r1 = http("POST", URL_SIGN_V1, json, first);
             log("v1 <- " + mask(first) + " : HTTP " + r1.httpCode + " | "
@@ -716,7 +626,6 @@ public class SignHook implements IXposedHookLoadPackage {
                 return;
             }
 
-            // 还不行，换 H5 后端的网关再来一次（实测该主机同样提供这个接口）
             sleepQuiet(350);
             Resp r2 = http("POST", GW_H5 + "/portal/api/user-sign/v2/sign", json, first);
             log("h5api <- " + mask(first) + " : HTTP " + r2.httpCode + " | "
@@ -732,8 +641,7 @@ public class SignHook implements IXposedHookLoadPackage {
         private void report(boolean ok, String body, String used) {
             if (ok) {
                 int days = deepInt(body, "consecutiveDays", -1);
-                // 奖励读的是签到页自己 JS 用的真字段 data.rewardList[]（一手证据），
-                // 早先按第三方脚本猜的 currency/nb/coin… 全是错的，已删除。
+
                 String extra = (days > 0 ? "，连续 " + days + " 天" : "") + rewardSummary(body);
                 log("签到成功" + extra + "，使用凭据 " + mask(used));
                 markOkToday();
@@ -752,14 +660,10 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    // =========================================================================
-    // 候选凭据
-    // =========================================================================
     interface Sink {
         void put(String v);
     }
 
-    /** 当前抓到的全部候选凭据（裸 token 与 Bearer 变体都在里面，顺序不保证） */
     static Set<String> candidateTokens() {
         Set<String> out = new LinkedHashSet<String>();
         addTok(out, gwAuthHeader);
@@ -786,7 +690,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /** 从带 JWT 的 URL 里把疑似 token 的查询参数抠出来 */
     static void addJwtCandidates(Set<String> out, String url) {
         if (url == null || url.length() < 10) {
             return;
@@ -820,9 +723,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return d == 2 && v.length() > 40;
     }
 
-    // =========================================================================
-    // HTTP
-    // =========================================================================
     static class Resp {
         int httpCode;
         String body = "";
@@ -848,8 +748,7 @@ public class SignHook implements IXposedHookLoadPackage {
             c.setRequestProperty("Origin", "https://h5-bj.ninebot.com");
             c.setRequestProperty("Referer", "https://h5-bj.ninebot.com/");
             c.setRequestProperty("User-Agent", UA);
-            // device_id（下划线）是签到页自己的 JS 用的请求头名，deviceId（驼峰）是第三方
-            // 脚本用的。两个都发，谁读都行 —— 见 README「一手证据」一节。
+
             c.setRequestProperty("device_id", deviceId == null ? "" : deviceId);
             c.setRequestProperty("deviceId", deviceId == null ? "" : deviceId);
             if (uid != null && uid.length() > 0) {
@@ -899,9 +798,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return new String(bos.toByteArray(), "UTF-8");
     }
 
-    // =========================================================================
-    // 响应解析
-    // =========================================================================
     static int respCode(String body) {
         try {
             return new JSONObject(body).optInt("code", -999);
@@ -910,22 +806,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 解读网关响应的失败签名。下面这几条是用**无效 token 直接打线上网关**实测出来的
-     * （2026-10，POST/GET 同一个 user-sign 端点 + 一个故意写错的路径做对照）：
-     *
-     *   {"code":2,"key":"response.params.error"}   带了 Authorization 但结构不被接受 / 缺参数
-     *   {"code":1,"key":"response.system.error"}   凭据被服务器拒绝（真的走到了鉴权那一步）
-     *   {"status":404,"error":"Not Found",...}     接口路径不存在（对照组的签名）
-     *   code == 0                                  成功
-     *
-     * 关键的一条：**别把 code 2 说成「走得更远」。** 早先一轮用带两个点的假 JWT 做前缀对照，
-     * 观察到裸 token 得 code 2、加 "Bearer " 得 code 1，当时解读成「裸 token 进到了参数校验」。
-     * 后来用本文件这套代码（probe/HttpProbe.java）拿 probe-invalid-token 复跑，**两种写法都是
-     * code 1**，差异复现不出来。而 params.error 更像参数/结构校验没过（通常发生在鉴权之前），
-     * 所以那个「更远」的解读很可能一开始就是反的。结论：这个网关认哪种格式无法判定，
-     * 模块对每个 token 都同时试裸版和 Bearer 版，谁 code==0 用谁。
-     */
     static String explain(String body) {
         if (body == null) {
             return "无响应体";
@@ -939,9 +819,7 @@ public class SignHook implements IXposedHookLoadPackage {
         if (respCode(body) == 0) {
             return "成功";
         }
-        // 下面两个码是签到页自己的 JS 里写死的分支（一手证据）：
-        //   540004 —— 今日已签到（app 自己也是直接 return，当作正常）
-        //   54019  —— 会话失效（app 的做法是 location.reload() 重新取 token）
+
         if (respCode(body) == 540004) {
             return "今日已签到（服务端明确回绝，属正常）";
         }
@@ -972,14 +850,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return def;
     }
 
-    /**
-     * 从签到/补签响应里读出真实奖励，拼成一句人话。
-     *
-     * 字段来自**签到页自己的 JS 代码**（一手证据，不是第三方脚本）：成功响应
-     * data.rewardList[] = { rewardId, name, type, rewardType, rewardValue, medalName, medalUrl }
-     * rewardType：1=经验值 2=N币(用 rewardValue) 3=勋章(用 medalName) 4=补签卡 5=商城兑换券
-     * 签到页的弹窗就是对 rewardList 逐项 switch 显示这几种。
-     */
     static String rewardSummary(String body) {
         try {
             JSONObject o = new JSONObject(body);
@@ -1023,9 +893,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    // =========================================================================
-    // 当日去重
-    // =========================================================================
     static String today() {
         return new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
     }
@@ -1084,24 +951,8 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    // =========================================================================
-    // 图片诊断（给「自定义主页车辆图片」定位 hook 点用，不影响签到）
-    // =========================================================================
-
-    /**
-     * 把 app 加载图片的调用记下来，回答一个静态分析答不了的问题：
-     * **主页那张电动车图到底是谁加载的、从哪儿来的？**
-     *
-     * - 原生图片栈是 Glide（RequestBuilder#load 的所有重载）
-     * - RN / Drawee 用 Fresco（SimpleDraweeView#setImageURI、ReactImageView#setSource）
-     * - 再兜一层 ImageView#setImageResource / setImageBitmap / setImageDrawable：
-     *   这两条能直接打出「哪个 view、哪个资源名」，是辨认主页那张图最有力的证据
-     *
-     * 每条（来源 + 值 + view）只记一次，总量上限 IMG_LOG_MAX，避免刷爆日志。
-     * 如果主页那张图是 H5/WebView 里画的，这里什么都看不到 —— 那就说明得换思路。
-     */
     private void hookImageDiag(final XC_LoadPackage.LoadPackageParam lp) {
-        // 1) Glide：原生图片加载的入口
+
         try {
             Class<?> rb = XposedHelpers.findClass("com.bumptech.glide.RequestBuilder", lp.classLoader);
             XposedBridge.hookAllMethods(rb, "load", new XC_MethodHook() {
@@ -1128,7 +979,7 @@ public class SignHook implements IXposedHookLoadPackage {
                             img("glide(车辆图·文件不存在 " + vehImgPath + ")", s, null);
                             return;
                         }
-                        // 只把字符串换成 file://：参数类型不变（还是 String），Glide 会走本地文件加载
+
                         p.args[0] = "file://" + vehImgPath;
                         img("glide(车辆图·已替换)", s + "  ->  file://" + vehImgPath, null);
                     } catch (Throwable t) {
@@ -1146,7 +997,6 @@ public class SignHook implements IXposedHookLoadPackage {
             log("ImageDiag: hook Glide 失败 " + t);
         }
 
-        // 2) Fresco / Drawee：RN 与部分原生控件用它
         String[] drawee = new String[]{
                 "com.facebook.drawee.view.SimpleDraweeView",
                 "com.facebook.drawee.view.DraweeView"};
@@ -1166,7 +1016,6 @@ public class SignHook implements IXposedHookLoadPackage {
             }
         }
 
-        // 3) RN 的 <Image>：它自己管 Fresco，不走上面的 setImageURI
         try {
             Class<?> rv = XposedHelpers.findClass(
                     "com.facebook.react.views.image.ReactImageView", lp.classLoader);
@@ -1181,7 +1030,6 @@ public class SignHook implements IXposedHookLoadPackage {
             log("ImageDiag: hook ReactImageView 失败 " + t);
         }
 
-        // 4) ImageView 层：直接打「view 名 + 资源名」
         try {
             XposedBridge.hookAllMethods(ImageView.class, "setImageResource", new XC_MethodHook() {
                 @Override
@@ -1211,7 +1059,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /** 是不是主页那张车型图（Glide 从 device-config 拉的那张） */
     static boolean isVehicleImage(String s) {
         if (s == null || s.indexOf(VEH_IMG_KEY) < 0) {
             return false;
@@ -1222,14 +1069,6 @@ public class SignHook implements IXposedHookLoadPackage {
                 || s.indexOf(".jpg") >= 0;
     }
 
-    /**
-     * 读「主页车辆图替换」配置，最多 5 秒重读一次（改完配置不用重启 app）。
-     *
-     * 配置文件 = app 私有目录下的 `ninebot-sign.conf`：
-     *   vehicleImage=1                     开关（1/true/on 为开，其它为关）
-     *   vehicleImagePath=/sdcard/…/x.png   图片绝对路径（缺省 = 同目录 vehicle.png）
-     * 紧急关闭：同目录建一个名为 `vehicle-image-off` 的文件即可（无需改配置）。
-     */
     static boolean vehImgEnabled() {
         long now = System.currentTimeMillis();
         if (now - vehConfAt > 5000L) {
@@ -1238,16 +1077,14 @@ public class SignHook implements IXposedHookLoadPackage {
             String path = null;
             String stamp = null;
             try {
-                // 配置走 conf()（ninebot-sign.conf + 设置界面两条通道叠加）。只读文件是不行的：
-                // 真机上 ninebot-sign.conf 根本写不进去（open failed: EACCES），开关永远是「关」——
-                // 这就是 2026-10-15 19:42 日志里「车辆图配置：开关=关」的来由。
+
                 Map<String, String> c = conf();
                 on = confOn("vehicleImage", false);
                 path = c.get("vehicleImagePath");
                 stamp = c.get("vehicleImageStamp");
                 File dir = dataDir();
                 if (dir != null && new File(dir, "vehicle-image-off").exists()) {
-                    on = false;   // 紧急关闭：建个同名文件即可，不用改配置
+                    on = false;
                 }
                 if (path == null || path.length() == 0) {
                     path = dir == null ? null : new File(dir, "vehicle.png").getAbsolutePath();
@@ -1255,7 +1092,7 @@ public class SignHook implements IXposedHookLoadPackage {
             } catch (Throwable t) {
                 log("读 vehicle 配置失败: " + t);
             }
-            // 相册选的图优先（走内容提供者），其次才是手工路径
+
             String src = null;
             if (on) {
                 src = (stamp != null && stamp.length() > 0) ? vehicleFromProvider(stamp) : null;
@@ -1275,12 +1112,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return vehImgOn && vehImgPath != null && vehImgPath.length() > 0;
     }
 
-    /**
-     * 相册选的图：从设置界面的内容提供者读回来，落到九号自己的私有目录。
-     *
-     * <p>文件名里带「戳」，戳变了就是换了图 —— 既是 Glide 的缓存 key（不换名字它会拿旧图，
-     * 与 effectiveVehPath 同一个道理），也顺手把上一张的副本删掉。
-     */
     static String vehicleFromProvider(String stamp) {
         try {
             Context ctx = appCtx;
@@ -1334,7 +1165,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /** 手工填的路径：同样复制进九号私有目录并按内容命名（外部路径注入进程多半读不到） */
     static String vehicleFromManual(String src) {
         try {
             Context ctx = appCtx;
@@ -1372,13 +1202,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 把源图复制成一个**按内容命名**的副本，再把副本路径喂给 Glide。
-     *
-     * 为什么必须这么做：Glide 的内存/磁盘缓存是按 model 算 key 的。源路径固定是 `vehicle.png` 时，
-     * 就算你把文件换成第二张图，Glide 仍会命中第一张图的解码结果（现象：换了图还是旧的，开关
-     * 关了再开也一样）。换个文件名（长度 + 修改时间）就等于换了 key，它才会重新解码。
-     */
     static String effectiveVehPath(String src) {
         try {
             File f = new File(src);
@@ -1424,7 +1247,6 @@ public class SignHook implements IXposedHookLoadPackage {
         is.close();
     }
 
-    /** app 私有目录（外部 files 优先，和日志同处） */
     static File dataDir() {
         Context c = appCtx;
         if (c == null) {
@@ -1440,7 +1262,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return d;
     }
 
-    /** 记一条图片加载；同一条只记一次，总量到顶就停 */
     static void img(String src, Object value, Object view) {
         if (seenImages.size() >= IMG_LOG_MAX) {
             return;
@@ -1531,25 +1352,16 @@ public class SignHook implements IXposedHookLoadPackage {
         return o.length() <= max ? o : o.substring(0, max) + "...";
     }
 
-    // =========================================================================
-    // 设置界面（SettingsActivity）→ 九号那边的配置文件
-    // =========================================================================
-    // 界面把配置写进模块自己的 SharedPreferences（name=PREF）；注入进九号进程后由
-    // 这里把它落成 <九号数据目录>/ninebot-sign.conf，之后一切照旧读这个文件。
-    // 绕这一圈的原因：Android 11+ 一个应用写不了别的应用的 Android/data，
-    // 只有注入进九号进程的代码（就是这里）写得进去。
     static final String PREF = "ninebot_sign";
-    /** 带这行表头就表示文件由设置界面接管：界面每次保存都会整份重写 */
+
     static final String CONF_HEADER = "# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行";
     static volatile long uiConfAt = 0L;
 
-    // ---- 读 ninebot-sign.conf（设置界面或手改都在这里）----
     static volatile long confAt = 0L;
     static volatile Map<String, String> confMap = null;
-    /** 「设置里关掉了自动签到」只提示一次，避免每次回前台都刷日志 */
+
     static volatile boolean signOffLogged = false;
 
-    /** 读配置文件的键值（5 秒缓存，读不到就给空表） */
     static Map<String, String> conf() {
         long now = System.currentTimeMillis();
         Map<String, String> cached = confMap;
@@ -1557,7 +1369,7 @@ public class SignHook implements IXposedHookLoadPackage {
             return cached;
         }
         Map<String, String> out = new LinkedHashMap<String, String>();
-        // 1) 手改 / 老版本留下的 ninebot-sign.conf（能读到才合并）
+
         try {
             File dir = dataDir();
             if (dir != null) {
@@ -1575,8 +1387,7 @@ public class SignHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log("读配置失败: " + t);
         }
-        // 2) 设置界面盖在上面（优先级更高）。真机 Android 11+ 上 ninebot-sign.conf 常常
-        //    写不进去（open failed: EACCES），所以不能只靠文件，直接读进程内能拿到的界面设置。
+
         Map<String, String> ui = uiConfMap();
         if (ui != null) {
             out.putAll(ui);
@@ -1586,7 +1397,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return out;
     }
 
-    /** 把一行 key=value（或注释/空行）并进 out；null 安全 */
     static void putLine(Map<String, String> out, String ln) {
         ln = ln == null ? "" : ln.trim();
         if (ln.length() == 0 || ln.charAt(0) == '#') {
@@ -1598,7 +1408,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /** 配置里的开关：1/true/on 为开，0/false/off 为关，没写就用默认值 */
     static boolean confOn(String key, boolean def) {
         String v = conf().get(key);
         if (v == null || v.length() == 0) {
@@ -1621,16 +1430,10 @@ public class SignHook implements IXposedHookLoadPackage {
         return ConfText.nz(v);
     }
 
-    /** 界面的键值对 → 配置文件内容（纯函数，离线可测） */
-    /**
-     * 配置文件全文。真正的拼装逻辑在 {@link ConfText} 里：设置界面跑在模块自己的进程，
-     * 那里没有 Xposed API，碰 SignHook 会 NoClassDefFoundError，所以两边共用纯文本类。
-     */
     static String uiConfText(Map<String, String> m) {
         return ConfText.build(m);
     }
 
-    /** 读设置界面写下的 SharedPreferences（LSPosed 的 XSharedPreferences）；没用过界面返回 null */
     static Map<String, String> uiPrefs() {
         try {
             de.robv.android.xposed.XSharedPreferences p =
@@ -1640,7 +1443,7 @@ public class SignHook implements IXposedHookLoadPackage {
                 return null;
             }
             String[] keys = {"signEnabled", "vehicleImage", "vehicleImagePath",
-                    "venergy"};
+                    "fakeExpiry"};
             Map<String, String> m = new java.util.LinkedHashMap<String, String>();
             for (int i = 0; i < keys.length; i++) {
                 String v = p.getString(keys[i], "");
@@ -1653,7 +1456,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /** 把界面设置全文解析成 key=value map（provider 返回的文本） */
     static Map<String, String> parseConfText(String text) {
         Map<String, String> out = new LinkedHashMap<String, String>();
         if (text == null) {
@@ -1666,7 +1468,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return out;
     }
 
-    /** 界面的键值：优先内容提供者，其次 XSharedPreferences；读不到返回 null */
     static Map<String, String> uiConfMap() {
         String text = providerConfText();
         if (text != null) {
@@ -1675,13 +1476,8 @@ public class SignHook implements IXposedHookLoadPackage {
         return uiPrefs();
     }
 
-    /** 内容提供者通道：模块 App 里的 ConfProvider 直接把配置全文给过来 */
     static String providerConfText() {
-        // Android 11+ 上九号（targetSdk 34）看不到我们模块 App 的包，AMS 会直接拒绝：
-        //   IllegalArgumentException: Unknown authority com.ninebotsign.lsp.conf
-        // 真机上量过：adb shell 走 content call 拿得到，九号进程里拿不到 —— 这是包可见性
-        // 限制（九号没声明 <queries>），改我们的代码绕不过去。失败三次就认，十分钟内不再
-        // 试，改用 XSharedPreferences 那条通道（那条是好的）。
+
         if (System.currentTimeMillis() < provSkipUntil) {
             return null;
         }
@@ -1713,7 +1509,6 @@ public class SignHook implements IXposedHookLoadPackage {
 
     static volatile long uiWarnAt = 0L;
 
-    /** 「读不到界面设置」这种话不要每 5 秒刷一遍 */
     static void logUiWarn(String s) {
         long now = System.currentTimeMillis();
         if (now - uiWarnAt < 60000L) {
@@ -1723,7 +1518,6 @@ public class SignHook implements IXposedHookLoadPackage {
         log(s);
     }
 
-    /** 每 5 秒最多一次：把界面设置落成 ninebot-sign.conf（内容没变就不写） */
     static void syncUiConf() {
         try {
             long now = System.currentTimeMillis();
@@ -1750,8 +1544,7 @@ public class SignHook implements IXposedHookLoadPackage {
             if (text.equals(uiReadText(f))) {
                 return;
             }
-            // 老版本或手动留下来的 ninebot-sign.conf 可能是 root:root 644（真机上就是，
-            // 所以每次覆盖都 EACCES）。目录是九号自己的，删掉重建即可。
+
             if (f.exists() && !f.canWrite()) {
                 boolean gone = f.delete();
                 log("配置：旧的 ninebot-sign.conf 不可写（" + (gone ? "已删除重建" : "删不掉，仍试覆盖") + "）");
@@ -1764,8 +1557,7 @@ public class SignHook implements IXposedHookLoadPackage {
             log("设置界面：已写入 ninebot-sign.conf（" + text.length() + " 字节，来源="
                     + (viaProvider ? "内容提供者" : "SharedPreferences")
                     + (text.contains("signEnabled=0") ? "，签到=关" : "，签到=开")
-                    + (text.contains("vehicleImage=1") ? "，车图=开" : "，车图=关")
-                    + (text.contains("venergy=") ? "，动能回收=" + conf().get("venergy") : "") + "）");
+                    + (text.contains("vehicleImage=1") ? "，车图=开" : "，车图=关") + "）");
         } catch (Throwable t) {
             logUiWarn("设置界面：同步失败 " + t);
         }
@@ -1793,7 +1585,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /** 取 JSON 里某个字符串字段（不依赖 org.json，方便在 PC 上用真源码跑探针） */
     static String jsonStr(String body, String key) {
         if (body == null) {
             return null;
@@ -1841,7 +1632,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return null;
     }
 
-    /** 取 JSON 里某个整数字段（同样不依赖 org.json） */
     static int jsonInt(String body, String key, int def) {
         if (body == null) {
             return def;
@@ -1877,9 +1667,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return def;
     }
 
-    // =========================================================================
-    // hook 工具
-    // =========================================================================
     static void hook(XC_LoadPackage.LoadPackageParam lp, String cls, String method,
                      XC_MethodHook cb) {
         try {
@@ -1893,14 +1680,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    // =========================================================================
-    // 云配置抄写（2026-10-15 加）
-    // 九号的页面/命令/功能配置是云端按车型下发的 .nb 文件，内容是**加密**的（base64 密文，
-    // 见 /sdcard/.../files/dyncfg 里抄出来的 code/*.nb）。只有 App 自己解得了，所以换个位置下手：
-    // App 解密之后要用 Gson 把 JSON 解析成模型，这里盯 Gson#fromJson 的**入参字符串**，
-    // 命中「页面配置 / 命令表 / 功能表」就整段抄到外部目录 dyncfg_out/，adb 直接 pull。
-    // 顺带记一条 DynamicConfigManager#decryptNbFile 的请求日志（哪个页面在解密）。
-    // =========================================================================
     static int cfgDumpCount = 0;
 
     private void hookConfigDump(final XC_LoadPackage.LoadPackageParam lp) {
@@ -1965,24 +1744,14 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    // =========================================================================
-    // 车控命令诊断（2026-10-15 加）
-    // 背景：九号的命令表是云端按车型下发的 JSON（APK 里没有编译期命令号，见 _ninebot\vehicle_cmds.md），
-    // 所以「限速 / 定速巡航 / 校准 / 电池」实际的 cmd+index 只能在运行时看。这里记三件事：
-    //   ① DynamicCommandFactory.getCommandConfig(name) —— 名字 → s_cmd/s_index/s_data/r_cmd/r_index（每名字一次）
-    //   ② CommandExecutorImpl.execute(Command)        —— 真正下发的 cmd/index/target/data
-    //   ③ NbBluetoothDevice.onCharacteristicChanged    —— 原始上行帧
-    // 三个 hook 全部走 log()（同时进文件与 logcat）；同一条命令只记一次，总条数封顶 CMD_LOG_MAX。
-    // 这几个类只存在于九号 App 里，找不到就只记一行失败、不影响别的功能。
-    // =========================================================================
     static final java.util.Set<String> cmdNames = new java.util.LinkedHashSet<String>();
     static final java.util.Set<String> cmdFrames = new java.util.LinkedHashSet<String>();
     static int cmdLogCount = 0;
     static final int CMD_LOG_MAX = 600;
 
     private void hookVehicleCmds(final XC_LoadPackage.LoadPackageParam lp) {
-        hostCl = lp.classLoader;   // 拿宿主的类（模块自己的 Class.forName 看不到九号的类）
-        // ① 名字 → 命令号
+        hostCl = lp.classLoader;
+
         hook(lp, "cn.ninebot.library.bluetooth.dynamic.DynamicCommandFactory", "getCommandConfig",
                 new XC_MethodHook() {
                     @Override
@@ -2006,14 +1775,13 @@ public class SignHook implements IXposedHookLoadPackage {
                                     + " module=" + fieldStr(cfg, "module")
                                     + " retry=" + fieldInt(cfg, "retryTimes")
                                     + " timeout=" + fieldInt(cfg, "timeout"));
-                            // 只要有任意一页问过一次命令，就把整张表倒出来（不用一页页点着找）
+
                             dumpCommandMapOnce(p.thisObject);
                         } catch (Throwable t) {
                         }
                     }
                 });
 
-        // ② 下发
         hook(lp, "cn.ninebot.library.nbbluetooth.command.CommandExecutorImpl", "execute",
                 new XC_MethodHook() {
                     @Override
@@ -2027,7 +1795,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ③ 上行
         hook(lp, "cn.ninebot.library.nbbluetooth.NbBluetoothDevice", "onCharacteristicChanged",
                 new XC_MethodHook() {
                     @Override
@@ -2045,8 +1812,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ④ UI 功能 → 命令名：命令名本身来自云端表，所以「哪个页面发了哪个名字」对任何机型都通用。
-        //    注意包名是 ...dynamic.viewHolder.BtDynamicViewHolder（不是 ...dynamic.BtDynamicViewHolder）。
         hook(lp, "cn.ninebot.library.bluetooth.dynamic.viewHolder.BtDynamicViewHolder", "sendCommand",
                 new XC_MethodHook() {
                     @Override
@@ -2062,7 +1827,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ⑤ 建命令（名字 + 载荷）
         hook(lp, "cn.ninebot.library.bluetooth.dynamic.DynamicCommandFactory", "createCommand",
                 new XC_MethodHook() {
                     @Override
@@ -2071,7 +1835,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // ⑥ 这次握手走哪一代协议（回答「这台车是 Protocol1/2/3 还是 Encryption2/3」，按机型分代）
         hook(lp, "cn.ninebot.library.bluetooth.dynamic.DynamicDevice", "createPreparatoryProcessor",
                 new XC_MethodHook() {
                     @Override
@@ -2086,8 +1849,6 @@ public class SignHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // 顺带把云下发的动态配置（files/dynamic_config_new 里的 JSON）导到外部目录，
-        // 「动能回收」这类设置项的取值列表、以及还有哪些功能，都写在这份配置里；adb 直接 pull 出来看。
         try {
             new Thread(new Runnable() {
                 @Override
@@ -2102,11 +1863,6 @@ public class SignHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
         }
 
-        // 车控发送的应急通道（配置里写 vcmd/venergy 就能发命令，先验证链路再上界面）
-        try {
-            startVehicleCmdWatch();
-        } catch (Throwable t) {
-        }
     }
 
     static boolean dynCfgDumped = false;
@@ -2189,8 +1945,6 @@ public class SignHook implements IXposedHookLoadPackage {
     static boolean protoLogged = false;
     static boolean cmdMapDumped = false;
 
-    // 整表倒出来：DynamicCommandFactory 的私有实例字段 commandConfigMap 就是云端下发的那张全表，
-    // 拿到实例（getCommandConfig 的 thisObject）后反射遍历一次即可，无需一页页点着找功能。
     static void dumpCommandMapOnce(Object factory) {
         if (cmdMapDumped || factory == null) {
             return;
@@ -2390,17 +2144,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    // =========================================================================
-    // 车控命令直发（2026-10-15 22:3x）：让模块能真正往车上发命令
-    // 走九号自己的发送链路（见 _ninebot/send_api.md，静态分析 + 字节码验证）：
-    //   DynamicConfigManager.Companion.getInstance() → connectedDeviceList.get(0)
-    //   → DynamicDevice#sendCommand(String, byte[], boolean, Function1)
-    // Function1 用动态代理塞自己的回调，把车上回来的值打进日志。
-    // =========================================================================
-    private static java.lang.reflect.Method mDevSendBytes;
-    private static java.lang.Class<?> clsFunction1;
-    private static boolean vcmdWatchStarted;
-    /** 宿主的 ClassLoader：模块自己的 Class.forName 看不见九号的类，必须用它 */
     static ClassLoader hostCl;
 
     static Class<?> hostClass(String name) throws ClassNotFoundException {
@@ -2411,262 +2154,69 @@ public class SignHook implements IXposedHookLoadPackage {
         return Class.forName(name, false, cl);
     }
 
-    /** 当前已连接的车（DynamicDevice 实例）；没连上返回 null */
-    static Object connectedVehicle() {
+    static boolean fakeExpiryOn() {
         try {
-            Class<?> c = hostClass("cn.ninebot.library.bluetooth.dynamic.DynamicConfigManager");
-            Object companion = c.getField("Companion").get(null);
-            Object mgr = companion.getClass().getMethod("getInstance").invoke(companion);
-            if (mgr == null) {
-                return null;
-            }
-            java.lang.reflect.Field f = c.getDeclaredField("connectedDeviceList");
-            f.setAccessible(true);
-            Object list = f.get(mgr);
-            if (list instanceof java.util.List) {
-                java.util.List<?> l = (java.util.List<?>) list;
-                if (!l.isEmpty()) {
-                    return l.get(0);
-                }
-            }
+            String v = conf().get("fakeExpiry");
+            return v != null && ConfText.on(v);
         } catch (Throwable t) {
-            log("车控：取已连接设备失败 " + t);
+            return false;
         }
-        return null;
     }
 
-    /** kotlin.jvm.functions.Function1 的动态代理：只把回调参数打进日志 */
-    static Object vehicleCallback(final String tag) {
-        try {
-            if (clsFunction1 == null) {
-                clsFunction1 = hostClass("kotlin.jvm.functions.Function1");
-            }
-            final Class<?> f1 = clsFunction1;
-            return java.lang.reflect.Proxy.newProxyInstance(f1.getClassLoader(), new Class<?>[] { f1 },
-                    new java.lang.reflect.InvocationHandler() {
-                        @Override
-                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] a) {
-                            try {
-                                String s = "";
-                                if (a != null) {
-                                    for (int i = 0; i < a.length; i++) {
-                                        s += (i == 0 ? "" : ", ") + describe(a[i]);
-                                    }
-                                }
-                                log("车控回调 " + tag + " → " + m.getName() + "(" + s + ")");
-                            } catch (Throwable t) {
-                            }
-                            return null;
-                        }
-                    });
-        } catch (Throwable t) {
-            log("车控：建回调失败 " + t);
+    static final java.util.regex.Pattern EXPIRE_YEAR = java.util.regex.Pattern.compile(
+            "(?<![0-9])(?:19|20)[0-9]{2}([\\s]*)([.\\-/])([\\s]*)[0-9]{1,2}([\\s]*)([.\\-/])([\\s]*)[0-9]{1,2}");
+
+    static String expiryText(String s) {
+        if (s == null || s.length() == 0 || s.indexOf("有效期") < 0) {
             return null;
         }
-    }
-
-    static String describe(Object o) {
-        if (o == null) {
-            return "null";
-        }
-        if (o instanceof byte[]) {
-            return "bytes[" + ((byte[]) o).length + "] " + hex((byte[]) o);
-        }
-        if (o instanceof Number || o instanceof Boolean || o instanceof String) {
-            return String.valueOf(o);
-        }
-        return o.getClass().getSimpleName() + "@" + Integer.toHexString(o.hashCode());
-    }
-
-    /** 发一条命令（data 为 null 表示读）。返回 true＝已交给九号的发送链路 */
-    static boolean sendVehicleCmd(String name, byte[] data) {
-        Object dev = connectedVehicle();
-        if (dev == null) {
-            log("车控：没有已连接的车，发不了 " + name);
-            return false;
-        }
-        try {
-            if (mDevSendBytes == null) {
-                mDevSendBytes = dev.getClass().getMethod("sendCommand", String.class, byte[].class,
-                        boolean.class, hostClass("kotlin.jvm.functions.Function1"));
-            }
-            String tag = name + (data == null ? "(读)" : " " + hex(data));
-            mDevSendBytes.invoke(dev, name, data, Boolean.FALSE, vehicleCallback(tag));
-            log("车控：已交给发送链路 " + tag);
-            return true;
-        } catch (Throwable t) {
-            log("车控：发送失败 " + name + " " + t);
-            return false;
-        }
-    }
-
-    /** "0,0" / "0x02" 之类 → byte[]；空串返回 null */
-    static byte[] parseBytesArg(String s) {
-        if (s == null || s.trim().length() == 0) {
+        java.util.regex.Matcher m = EXPIRE_YEAR.matcher(s);
+        if (!m.find()) {
             return null;
         }
-        String[] parts = s.trim().split("[,;\\s]+");
-        byte[] out = new byte[parts.length];
-        for (int i = 0; i < parts.length; i++) {
-            String p = parts[i].trim();
-            try {
-                if (p.startsWith("0x") || p.startsWith("0X")) {
-                    out[i] = (byte) Integer.parseInt(p.substring(2), 16);
-                } else {
-                    out[i] = (byte) Integer.parseInt(p);
-                }
-            } catch (Throwable t) {
-                out[i] = 0;
-            }
-        }
-        return out;
+        String sep = m.group(2);
+        return m.replaceFirst("9999" + sep + "12" + sep + "31");
     }
 
-    /** 从回调参数里抠出字节：byte[] 直接用；Command 之类反射 getData() */
-    static byte[] bytesOf(Object o) {
-        if (o == null) {
-            return null;
-        }
-        if (o instanceof byte[]) {
-            return (byte[]) o;
-        }
-        try {
-            java.lang.reflect.Method m = o.getClass().getMethod("getData");
-            Object r = m.invoke(o);
-            if (r instanceof byte[]) {
-                return (byte[]) r;
-            }
-        } catch (Throwable t) {
-        }
-        try {
-            java.lang.reflect.Method m = o.getClass().getMethod("getValue");
-            Object r = m.invoke(o);
-            if (r instanceof byte[]) {
-                return (byte[]) r;
-            }
-        } catch (Throwable t) {
-        }
-        return null;
-    }
+    static final Set<String> expirySeen = new LinkedHashSet<String>();
 
-    /**
-     * 动能回收：先读 rFunBool（index 125 的两字节寄存器），再把低 2 位改成 mode，写回 setFunBool。
-     * 云配置里「动能回收」= rFunBool 的 toInt,0,2（低 2 位），标准=2、弱=1、关闭=0。
-     * 其余位是别的开关（坐垫感应 bit9、低电量延长续航 bit3…），所以必须读-改-写，不能整条覆盖。
-     */
-    static boolean setEnergyRecovery(final int mode) {
-        final Object dev = connectedVehicle();
-        if (dev == null) {
-            log("车控：没有已连接的车，改不了动能回收");
-            return false;
-        }
+    private void hookFakeExpiry(final XC_LoadPackage.LoadPackageParam lp) {
         try {
-            final Class<?> f1 = hostClass("kotlin.jvm.functions.Function1");
-            Object cb = java.lang.reflect.Proxy.newProxyInstance(f1.getClassLoader(), new Class<?>[] { f1 },
-                    new java.lang.reflect.InvocationHandler() {
-                        @Override
-                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] a) {
-                            try {
-                                byte[] b = bytesOf(a == null || a.length == 0 ? null : a[0]);
-                                if (b != null && b.length >= 2) {
-                                    int cur = (b[0] & 0xFF) | ((b[1] & 0xFF) << 8);
-                                    int next = (cur & ~0x0003) | (mode & 0x0003);
-                                    log("车控：动能回收 读到当前=0x" + Integer.toHexString(cur)
-                                            + " → 写回=0x" + Integer.toHexString(next) + "（目标 " + mode + "）");
-                                    sendVehicleCmd("setFunBool",
-                                            new byte[] { (byte) (next & 0xFF), (byte) ((next >> 8) & 0xFF) });
-                                } else {
-                                    log("车控：动能回收 读回来解析不了 "
-                                            + describe(a == null || a.length == 0 ? null : a[0]));
-                                }
-                            } catch (Throwable t) {
-                                log("车控：改动能回收失败 " + t);
-                            }
-                            return null;
-                        }
-                    });
-            if (mDevSendBytes == null) {
-                mDevSendBytes = dev.getClass().getMethod("sendCommand", String.class, byte[].class,
-                        boolean.class, hostClass("kotlin.jvm.functions.Function1"));
-            }
-            mDevSendBytes.invoke(dev, "rFunBool", null, Boolean.FALSE, cb);
-            log("车控：动能回收 先读 rFunBool（目标 " + mode + "：0关/1弱/2标准）");
-            return true;
-        } catch (Throwable t) {
-            log("车控：动能回收 发读命令失败 " + t);
-            return false;
-        }
-    }
-
-    /**
-     * 配置里的应急发送通道：`vcmd=setFunBool:2,0`（写）或 `vcmd=rFunBool`（读）；
-     * `venergy=0|1|2|off|weak|standard` 直接改动能回收。值一变就执行一次 ——
-     * 这样在没做界面之前也能手动验证发送链路。
-     */
-    static void startVehicleCmdWatch() {
-        if (vcmdWatchStarted) {
-            return;
-        }
-        vcmdWatchStarted = true;
-        Thread t = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                String last = "";
-                String lastE = "";
-                Object lastDev = null;
-                while (true) {
+            XposedBridge.hookAllMethods(android.widget.TextView.class, "setText", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    if (!fakeExpiryOn()) {
+                        return;
+                    }
                     try {
-                        Thread.sleep(1500);
-                        Map<String, String> c = conf();
-                        String v = c.get("vcmd");
-                        v = v == null ? "" : v.trim();
-                        if (v.length() > 0 && !v.equals(last)) {
-                            last = v;
-                            int sep = v.indexOf(':');
-                            if (sep < 0) {
-                                sep = v.indexOf('=');
-                            }
-                            String name = sep < 0 ? v : v.substring(0, sep).trim();
-                            String arg = sep < 0 ? "" : v.substring(sep + 1).trim();
-                            sendVehicleCmd(name, parseBytesArg(arg));
+                        Object o = p.thisObject;
+                        if (!(o instanceof android.widget.TextView)) {
+                            return;
                         }
-                        String e = c.get("venergy");
-                        e = e == null ? "" : e.trim().toLowerCase();
-                        // 换了一台已连接的车（重连/换车）就把「已下发」标记清掉，重发一次；
-                        // 否则这个开关只在进程启动那一瞬间生效，用户改完看不到反应。
-                        Object devNow = connectedVehicle();
-                        if (devNow != null && devNow != lastDev) {
-                            lastDev = devNow;
-                            lastE = "";
-                            log("车控：车已连接，准备下发动能回收设置");
+                        CharSequence cs = ((android.widget.TextView) o).getText();
+                        if (cs == null) {
+                            return;
                         }
-                        if (e.length() > 0 && !e.equals(lastE)) {
-                            lastE = e;
-                            int mode = -1;
-                            if ("off".equals(e) || "0".equals(e) || "close".equals(e)) {
-                                mode = 0;
-                            } else if ("weak".equals(e) || "1".equals(e)) {
-                                mode = 1;
-                            } else if ("standard".equals(e) || "2".equals(e)) {
-                                mode = 2;
-                            }
-                            if (mode >= 0) {
-                                setEnergyRecovery(mode);
+                        String fixed = expiryText(cs.toString());
+                        if (fixed == null) {
+                            return;
+                        }
+                        ((android.widget.TextView) o).setText(fixed);
+                        synchronized (expirySeen) {
+                            if (expirySeen.size() < 8 && expirySeen.add(fixed)) {
+                                log("界面文字：" + fixed);
                             }
                         }
-                    } catch (Throwable t2) {
+                    } catch (Throwable t) {
                     }
                 }
-            }
-        }, "NinebotSign-vcmd");
-        t.setDaemon(true);
-        t.start();
-        log("车控：应急发送通道已启动（vcmd=命令名:字节,字节 / venergy=0关|1弱|2标准）");
+            });
+            note("OK   android.widget.TextView#setText");
+        } catch (Throwable t) {
+            note("FAIL android.widget.TextView#setText -> " + t);
+        }
     }
 
-    // =========================================================================
-    // 日志 / 提示
-    // =========================================================================
     static void note(String s) {
         hookLog.add(s);
     }
@@ -2677,8 +2227,7 @@ public class SignHook implements IXposedHookLoadPackage {
             XposedBridge.log(line);
         } catch (Throwable t) {
         }
-        // 同时丢一份到 logcat：这样在电脑上 `adb logcat -s NinebotSign` 就能看到模块自己的
-        // 诊断，不用让用户去 LSPosed 里导日志（导日志一次要来回好几轮）
+
         try {
             android.util.Log.i("NinebotSign", msg);
         } catch (Throwable t) {
@@ -2730,9 +2279,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    // =========================================================================
-    // 杂项
-    // =========================================================================
     static String str(Object[] args, int i) {
         if (args == null || i >= args.length || args[i] == null) {
             return "null";
@@ -2744,7 +2290,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return a != null ? a : b;
     }
 
-    /** 睡一会儿，被打断也不抛（这个方法多半跑在后台线程里） */
     static void sleepQuiet(long ms) {
         try {
             Thread.sleep(ms);
@@ -2752,16 +2297,6 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
-    /**
-     * 从响应体里认出「今天已经签过了」。
-     *
-     * 判定今日是否已签原本有两条路：签到接口返回 code == 0（刚签成功），
-     * 或者 status 接口返回 code == 0 且 data.currentSignStatus == 1（早先签过）。
-     * 但 status 的字段名是从第三方脚本抄来的、没有官方文档，万一字段名变了，
-     * 一条无害的重复签到会被误报成失败，用户就分不清到底坏没坏。
-     * 所以这里加第三重兜底：响应原文里明确出现「已签到 / already / repeat」，
-     * 就按已签到处理。匹配故意收得很窄，正常报错（参数错、凭据过期）不会误命中。
-     */
     static boolean isAlreadySigned(String body) {
         if (body == null) {
             return false;
@@ -2787,7 +2322,6 @@ public class SignHook implements IXposedHookLoadPackage {
         return s.substring(0, 10) + "…" + s.substring(s.length() - 6) + " (len=" + s.length() + ")";
     }
 
-    /** 把候选列表按尝试顺序打成一行，方便从日志判断「到底试了哪几个」 */
     static String candidateSummary(Collection<String> cands) {
         StringBuilder sb = new StringBuilder();
         int n = 0;
