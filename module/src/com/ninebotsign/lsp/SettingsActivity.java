@@ -56,7 +56,7 @@ public class SettingsActivity extends Activity {
     private static final int RED_TINT = 0x1FE64340;
     private static final int RED = 0xFFE64340;
 
-    private static final String VER = "2.5";
+    private static final String VER = "2.6";
 
     private static final String REPO = "https://github.com/qwe2251518/ninebot-sign-lsp";
 
@@ -71,6 +71,7 @@ public class SettingsActivity extends Activity {
     private Switch nitroOn;
 
     private Switch fakeExpiryOn;
+    private Switch bgOn;
     private Switch autoShareSw;
     private Switch fakeShareSw;
     private android.widget.EditText postIdIn;
@@ -83,6 +84,7 @@ public class SettingsActivity extends Activity {
 
     private boolean loading = false;
     private static final int REQ_PICK = 1001;
+    private static final int REQ_BG = 1002;
 
     public static final String VEHICLE_SRC = "vehicle-src.png";
 
@@ -97,6 +99,21 @@ public class SettingsActivity extends Activity {
         } catch (Throwable t) {
         }
         setContentView(buildUi());
+        try {
+            final String bgp0 = sp().getString("bgImagePath", "");
+            if (bgp0 != null && bgp0.length() > 0) {
+                new Thread(new Runnable() {
+                    public void run() {
+                        try {
+                            String r = copyToNinebotByRoot(bgp0);
+                            Log.i("NinebotSign", "\u80cc\u666f\u56fe\uff1a\u542f\u52a8\u91cd\u5efa\u526f\u672c -> " + r);
+                        } catch (Throwable t) {
+                        }
+                    }
+                }).start();
+            }
+        } catch (Throwable t) {
+        }
         load();
     }
 
@@ -155,6 +172,8 @@ public class SettingsActivity extends Activity {
         t.setTextColor(color);
         return t;
     }
+
+    private TextView bgStatus;
 
     private Switch mkSwitch() {
         Switch s = new Switch(this);
@@ -329,6 +348,23 @@ public class SettingsActivity extends Activity {
         pp.topMargin = dp(12);
         pp.bottomMargin = dp(2);
         c2.addView(pick);
+        bgOn = mkSwitch();
+        boolean bgv = false;
+        try {
+            bgv = sp().getBoolean("bgEnabled", false);
+        } catch (Throwable t) {
+            try {
+                bgv = "1".equals(sp().getString("bgEnabled", ""));
+            } catch (Throwable t2) {
+            }
+        }
+        bgOn.setChecked(bgv);
+        bgOn.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean c) {
+                sp().edit().putBoolean("bgEnabled", c).commit();
+                save(true);
+            }
+        });
         vehStatus = note("");
         c2.addView(vehStatus);
         vehPath = field("手工指定图片路径（一般不用填）");
@@ -593,6 +629,7 @@ public class SettingsActivity extends Activity {
         signOn.setChecked(!"0".equals(p.getString("signEnabled", "1")));
         vehOn.setChecked("1".equals(p.getString("vehicleImage", "0")));
         vehPath.setText(p.getString("vehicleImagePath", "vehicle.png"));
+        updateBgStatus();
 
         if (dashOn != null) {
             dashOn.setChecked("1".equals(p.getString("dashFix", "0")));
@@ -693,6 +730,8 @@ public class SettingsActivity extends Activity {
         m.put("vehicleImagePath", or(vehPath.getText().toString().trim(), "vehicle.png"));
 
         m.put("vehicleImageStamp", sp().getString("vehicleImageStamp", ""));
+        String bgp = sp().getString("bgImagePath", "");
+        m.put("bgImagePath", bgp);
 
         String se = sp().getString("showEnergyOff", "");
         if (energyTouched && energyOn != null) {
@@ -834,6 +873,143 @@ public class SettingsActivity extends Activity {
         }
     }
 
+    private void pickBg() {
+        try {
+            Intent i = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+            i.setType("image/*");
+            startActivityForResult(i, REQ_BG);
+        } catch (Throwable t) {
+            try {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("image/*");
+                startActivityForResult(i, REQ_BG);
+            } catch (Throwable t2) {
+                toast("打不开相册");
+            }
+        }
+    }
+
+    private void updateBgStatus() {
+        if (bgStatus == null) {
+            return;
+        }
+        String p = sp().getString("bgImagePath", "");
+        bgStatus.setText(p.length() == 0
+                ? "还没选背景图（留空 = 不换）"
+                : "已选：" + p);
+    }
+
+    private String saveBgSource(Uri src) {
+        InputStream in = null;
+        OutputStream out = null;
+        try {
+            in = getContentResolver().openInputStream(src);
+            if (in == null) {
+                Log.i("NinebotSign", "背景图：openInputStream 返回 null，uri=" + src);
+                return null;
+            }
+            File dir = new File(NINEBOT_DIR);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            File f = new File(dir, "bg-custom.png");
+            out = new FileOutputStream(f, false);
+            pipe(in, out);
+            close(out);
+            out = null;
+            close(in);
+            in = null;
+            if (f.length() <= 0L) {
+                Log.i("NinebotSign", "背景图：写完为空 " + f.getAbsolutePath());
+                return null;
+            }
+            String path = f.getAbsolutePath();
+            Log.i("NinebotSign", "背景图：已保存 " + path + " (" + f.length() + " 字节)");
+            sp().edit().putString("bgImagePath", path).commit();
+            try {
+                java.io.File pf0 = new java.io.File(path);
+                pf0.setReadable(true, false);
+                pf0.setWritable(true, false);
+            } catch (Throwable t0) {
+            }
+            return path;
+        } catch (Throwable t) {
+            Log.i("NinebotSign", "背景图：主路径失败 " + t);
+            return saveBgFallback(src);
+        } finally {
+            close(in);
+            close(out);
+        }
+    }
+
+    private String copyToNinebotByRoot(String src) {
+        try {
+            String dst = NINEBOT_DIR + "/bg-custom.png";
+            String cmd = "cp '" + src + "' '" + dst + "' && chmod 666 '" + dst + "' && mkdir -p /data/user/0/cn.ninebot.ninebot/files && cp '" + src + "' /data/user/0/cn.ninebot.ninebot/files/bg-custom.png && chmod 644 /data/user/0/cn.ninebot.ninebot/files/bg-custom.png";
+            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+            int rc = p.waitFor();
+            File d = new File(dst);
+            Log.i("NinebotSign", "背景图：root 拷贝 rc=" + rc + " exists=" + d.exists() + " len=" + d.length());
+            if (rc == 0) {
+                Thread.sleep(200L);
+                return dst;
+            }
+            return null;
+        } catch (Throwable t) {
+            Log.i("NinebotSign", "背景图：root 拷贝不可用 " + t);
+            return null;
+        }
+    }
+
+    private String saveBgFallback(Uri src) {
+        InputStream in = null;
+        try {
+            in = getContentResolver().openInputStream(src);
+            if (in == null) {
+                return null;
+            }
+            File dir = new File(Environment.getExternalStorageDirectory(), "Pictures");
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            File f = new File(dir, "ninebot-bg.png");
+            FileOutputStream fo = new FileOutputStream(f, false);
+            try {
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    fo.write(buf, 0, n);
+                }
+                fo.flush();
+            } finally {
+                close(fo);
+            }
+            if (f.length() <= 0L) {
+                return null;
+            }
+            String path = f.getAbsolutePath();
+            String viaRoot = copyToNinebotByRoot(path);
+            if (viaRoot != null) {
+                path = viaRoot;
+            }
+            Log.i("NinebotSign", "背景图：备用路径成功 " + path + " (" + f.length() + " 字节)");
+            sp().edit().putString("bgImagePath", path).commit();
+            try {
+                java.io.File pf0 = new java.io.File(path);
+                pf0.setReadable(true, false);
+                pf0.setWritable(true, false);
+            } catch (Throwable t0) {
+            }
+            return path;
+        } catch (Throwable t) {
+            Log.i("NinebotSign", "背景图：备用路径也失败 " + t);
+            return null;
+        } finally {
+            close(in);
+        }
+    }
+
     private void pickImage() {
         try {
 
@@ -856,7 +1032,20 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
-        if (req != REQ_PICK || res != RESULT_OK || data == null || data.getData() == null) {
+        if (res != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        if (req == REQ_BG) {
+            if (saveBgSource(data.getData()) == null) {
+                toast("?    读不出这张图，换一张？");
+                return;
+            }
+            save(false);
+            updateBgStatus();
+            toast("背景图已存好，重进九号车控页生效");
+            return;
+        }
+        if (req != REQ_PICK) {
             return;
         }
         if (saveVehicleSource(data.getData()) == null) {

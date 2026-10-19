@@ -112,6 +112,8 @@ public class SignHook implements IXposedHookLoadPackage {
 
         hookApplicationContext(lp);
         hookLifecycle(lp);
+        hookImageDiag(lp);
+        hookBgImage(lp);
         hookVehicleCmds(lp);
         hookWebDiag(lp);
         hookConsoleDiag(lp);
@@ -1071,6 +1073,348 @@ public class SignHook implements IXposedHookLoadPackage {
             note("ImageDiag: ImageView#setImageResource/setImageBitmap/setImageDrawable 已挂");
         } catch (Throwable t) {
             log("ImageDiag: hook ImageView 失败 " + t);
+        }
+    }
+
+    static boolean bgOn = false;
+    static String bgPath = null;
+    static String bgKey = null;
+    static android.graphics.Bitmap bgBmp = null;
+
+    static boolean bgImgEnabled() {
+        try {
+            if (!"1".equals(conf().get("bgImage"))) {
+                return false;
+            }
+            String p = conf().get("bgImagePath");
+            return p != null && p.length() > 0;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    static android.graphics.Bitmap bgBitmap() {
+        try {
+            if (bgBmp != null) {
+                return bgBmp;
+            }
+            if (!bgImgEnabled()) {
+                return null;
+            }
+            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeFile(bgPath, o);
+            int sample = 1;
+            while (o.outWidth / (sample * 2) >= 1440) {
+                sample *= 2;
+            }
+            android.graphics.BitmapFactory.Options o2 = new android.graphics.BitmapFactory.Options();
+            o2.inSampleSize = sample;
+            String[] cands = new String[]{bgPath, "/data/data/cn.ninebot.ninebot/files/bg-custom.png", "/data/user/0/cn.ninebot.ninebot/files/bg-custom.png"};
+            for (int ci = 0; ci < cands.length && bgBmp == null; ci++) {
+                if (cands[ci] != null && cands[ci].length() > 0) {
+                    bgBmp = android.graphics.BitmapFactory.decodeFile(cands[ci], o2);
+                }
+            }
+            if (bgBmp == null) {
+                try {
+                    String priv = "/data/user/0/cn.ninebot.ninebot/files/bg-custom.png";
+                    java.io.File srcF = new java.io.File("/sdcard/Pictures/ninebot-bg.png");
+                    if (srcF.exists()) {
+                        java.io.FileInputStream in1 = new java.io.FileInputStream(srcF);
+                        java.io.FileOutputStream out1 = new java.io.FileOutputStream(priv);
+                        byte[] buf = new byte[65536];
+                        int r1;
+                        while ((r1 = in1.read(buf)) > 0) {
+                            out1.write(buf, 0, r1);
+                        }
+                        out1.close();
+                        in1.close();
+                        bgBmp = android.graphics.BitmapFactory.decodeFile(priv, o2);
+                        log("\u80cc\u666f\u56fe\uff1a\u5df2\u81ea\u590d\u5236\u5230\u79c1\u6709\u76ee\u5f55 -> " + (bgBmp == null ? "\u4ecd\u5931\u8d25" : "OK"));
+                    }
+                } catch (Throwable t) {
+                    log("\u80cc\u666f\u56fe\uff1a\u81ea\u590d\u5236\u5931\u8d25 " + t);
+                }
+            }
+            if (bgBmp != null) {
+                log("背景图：已解码 " + bgBmp.getWidth() + "x" + bgBmp.getHeight());
+            }
+            return bgBmp;
+        } catch (Throwable t) {
+            log("背景图：解码失败 " + t);
+            return null;
+        }
+    }
+
+    private void hookBgImage(final XC_LoadPackage.LoadPackageParam lp) {
+        try {
+            XposedHelpers.findAndHookMethod(android.widget.ImageView.class, "setImageDrawable",
+                    android.graphics.drawable.Drawable.class, new XC_MethodHook() {
+                        protected void afterHookedMethod(MethodHookParam p) {
+                            try {
+                                Object o = p.thisObject;
+                                if (!(o instanceof android.widget.ImageView)) {
+                                    return;
+                                }
+                                final android.widget.ImageView iv = (android.widget.ImageView) o;
+                                if ("bgCustom".equals(iv.getTag())) {
+                                    return;
+                                }
+                                if (!bgImgEnabled()) {
+                                    return;
+                                }
+                                if (iv.getWidth() <= 0 || iv.getHeight() <= 0) {
+                                    iv.post(new Runnable() {
+                                        public void run() {
+                                            try {
+                                                applyBg(iv);
+                                            } catch (Throwable t) {
+                                            }
+                                        }
+                                    });
+                                    return;
+                                }
+                                applyBg(iv);
+                            } catch (Throwable t) {
+                            }
+                        }
+                    });
+            try {
+                XposedHelpers.findAndHookMethod(android.view.View.class, "setBackgroundDrawable",
+                        android.graphics.drawable.Drawable.class, new XC_MethodHook() {
+                            protected void afterHookedMethod(MethodHookParam p) {
+                                try {
+                                    Object o = p.thisObject;
+                                    if (!(o instanceof android.view.View)) {
+                                        return;
+                                    }
+                                    applyBgView((android.view.View) o);
+                                } catch (Throwable t) {
+                                }
+                            }
+                        });
+            } catch (Throwable t) {
+                log("背景图：容器背景钩子失败 " + t);
+            }
+            try {
+                XposedHelpers.findAndHookMethod(android.app.Activity.class, "onResume", new XC_MethodHook() {
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            final android.app.Activity act = (android.app.Activity) p.thisObject;
+                            if (act == null || !bgImgEnabled()) {
+                                return;
+                            }
+                            final android.view.View dv = act.getWindow().getDecorView();
+                            final long[] ds = new long[]{1500L};
+                            for (int di = 0; di < ds.length; di++) {
+                                final long dd = ds[di];
+                                dv.postDelayed(new Runnable() {
+                                    public void run() {
+                                        try {
+                                            walkBg(dv);
+                                        } catch (Throwable t) {
+                                        }
+                                    }
+                                }, dd);
+                            }
+                        } catch (Throwable t) {
+                        }
+                    }
+                });
+            } catch (Throwable t) {
+                log("背景图：Activity.onResume 钩子失败 " + t);
+            }
+            log("OK   背景图钩子已装");
+        } catch (Throwable t) {
+            log("背景图钩子失败 " + t);
+        }
+    }
+
+    static class BgDrawable extends android.graphics.drawable.Drawable {
+        private final android.graphics.Bitmap bm;
+        private final android.graphics.Paint pt = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+        private final android.graphics.Rect src = new android.graphics.Rect();
+        private final android.graphics.RectF dst = new android.graphics.RectF();
+
+        BgDrawable(android.graphics.Bitmap b) {
+            bm = b;
+        }
+
+        public void draw(android.graphics.Canvas c) {
+            android.graphics.Rect bb = getBounds();
+            if (bm == null || bb.isEmpty()) {
+                return;
+            }
+            float bw = bm.getWidth();
+            float bh = bm.getHeight();
+            float cw = bb.width();
+            float ch = bb.height();
+            float scale = Math.max(cw / bw, ch / bh);
+            float vw = cw / scale;
+            float vh = ch / scale;
+            float left = (bw - vw) / 2f;
+            float top = (bh - vh) / 2f;
+            src.set((int) left, (int) top, (int) (left + vw), (int) (top + vh));
+            dst.set(bb);
+            c.drawBitmap(bm, src, dst, pt);
+        }
+
+        public void setAlpha(int a) {
+        }
+
+        public void setColorFilter(android.graphics.ColorFilter cf) {
+        }
+
+        public int getOpacity() {
+            return android.graphics.PixelFormat.OPAQUE;
+        }
+    }
+
+    private static void applyBgView(android.view.View v) {
+        try {
+            if (v == null || "bgCustom".equals(v.getTag())) {
+                return;
+            }
+            if (v instanceof android.widget.ImageView) {
+                return;
+            }
+            if (!(v instanceof android.view.ViewGroup)) {
+                return;
+            }
+            if (!bgImgEnabled()) {
+                return;
+            }
+            int w = v.getWidth();
+            int h = v.getHeight();
+            if (w <= 0 || h <= 0) {
+                return;
+            }
+            android.util.DisplayMetrics dm = v.getResources().getDisplayMetrics();
+            if (w >= 700 && h >= 400 && bgHits == 0) {
+                log("\u80cc\u666f\u56fe\uff1a\u5019\u9009 " + v.getClass().getName() + " " + w + "x" + h + " \u5c4f=" + dm.widthPixels + "x" + dm.heightPixels);
+            }
+            String nm1 = null;
+            try {
+                int id1 = v.getId();
+                if (id1 != 0 && id1 != -1) {
+                    nm1 = v.getResources().getResourceEntryName(id1);
+                }
+            } catch (Throwable t) {
+            }
+            boolean gate1 = h >= dm.heightPixels * 0.95f && w >= dm.widthPixels * 0.95f;
+            if (!gate1) {
+                try {
+                    android.view.ViewParent par1 = v.getParent();
+                    if (par1 instanceof android.view.View) {
+                        String pn1 = par1.getClass().getSimpleName();
+                        gate1 = pn1 != null && pn1.contains("ScrollView");
+                    }
+                } catch (Throwable t) {
+                }
+            }
+            if (!gate1 && h > dm.heightPixels * 6 / 5) {
+                gate1 = true;
+            }
+            if (!gate1) {
+                return;
+            }
+            android.graphics.Bitmap b = bgBitmap();
+            if (b == null) {
+                if (bgHits == 0) {
+                    log("\u80cc\u666f\u56fe\uff1a\u89e3\u7801\u5931\u8d25 path=" + conf().get("bgImagePath"));
+                }
+                return;
+            }
+            v.setTag("bgCustom");
+            bgHits++;
+            v.setBackgroundDrawable(new BgDrawable(b));
+            log("背景图：已给容器上背景 view=" + w + "x" + h);
+        } catch (Throwable t) {
+        }
+    }
+
+    private static int bgHits = 0;
+
+    private static void walkBg(android.view.View root) {
+        try {
+            if (!bgImgEnabled()) {
+                log("\u80cc\u666f\u56fe\uff1awalk \u8df3\u8fc7\uff08\u5f00\u5173\u672a\u5f00\uff09");
+                return;
+            }
+            bgHits = 0;
+            int seen = walkBg1(root, 0);
+            log("\u80cc\u666f\u56fe\uff1awalk \u5b8c\u6210 \u8282\u70b9=" + seen + " \u66ff\u6362=" + bgHits);
+        } catch (Throwable t) {
+        }
+    }
+
+
+
+    private static String bgResName(android.view.View v) {
+        try {
+            int id = v.getId();
+            if (id == 0 || id == -1) {
+                return null;
+            }
+            return v.getResources().getResourceEntryName(id);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static boolean bgForceOn() {
+        try {
+            if (!bgImgEnabled()) {
+                return false;
+            }
+            return !"0".equals(conf().get("bgForce"));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static int walkBg1(android.view.View v, int depth) {
+        int n = 1;
+        try {
+            applyBgView(v);
+            if (depth < 30 && v instanceof android.view.ViewGroup) {
+                android.view.ViewGroup g = (android.view.ViewGroup) v;
+                for (int i = 0; i < g.getChildCount(); i++) {
+                    n += walkBg1(g.getChildAt(i), depth + 1);
+                }
+            }
+        } catch (Throwable t) {
+        }
+        return n;
+    }
+
+    private static void applyBg(android.widget.ImageView iv) {
+        try {
+            if ("bgCustom".equals(iv.getTag())) {
+                return;
+            }
+            if (!bgImgEnabled()) {
+                return;
+            }
+            int w = iv.getWidth();
+            int h = iv.getHeight();
+            if (w <= 0 || h <= 0) {
+                return;
+            }
+            int sw = iv.getResources().getDisplayMetrics().widthPixels;
+            if (w < sw * 0.9f || h < w * 0.5f) {
+                return;
+            }
+            android.graphics.Bitmap b = bgBitmap();
+            if (b == null) {
+                return;
+            }
+            iv.setTag("bgCustom");
+            iv.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+            iv.setImageDrawable(new android.graphics.drawable.BitmapDrawable(iv.getResources(), b));
+            log("背景图：已替换 view=" + w + "x" + h);
+        } catch (Throwable t) {
         }
     }
 

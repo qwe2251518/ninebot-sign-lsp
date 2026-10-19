@@ -18,7 +18,7 @@ public class ConfProvider extends ContentProvider {
     public static final String VEHICLE_SEGMENT = "vehicle";
 
     private static final String[] KEYS = {
-            "vehicleImage", "vehicleImagePath", "vehicleImageStamp",
+            "vehicleImage", "vehicleImagePath", "vehicleImageStamp", "bgImage", "bgImagePath",
 
             "showNitro",
 

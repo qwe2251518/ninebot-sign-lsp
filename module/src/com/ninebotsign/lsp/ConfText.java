@@ -35,14 +35,6 @@ public final class ConfText {
             sb.append("vnitro=").append(nv).append('\n');
         }
 
-        String so = nz(m.get("showEnergyOff"));
-        if (so.length() > 0) {
-        }
-        String sn = nz(m.get("showNitro"));
-        if (sn.length() > 0) {
-        }
-
-
         sb.append("fakeExpiry=").append(on(m.get("fakeExpiry")) ? "1" : "0").append('\n');
 
         sb.append("autoShare=").append(on(m.get("autoShare")) ? "1" : "0").append('\n');
