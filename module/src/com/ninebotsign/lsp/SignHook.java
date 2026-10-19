@@ -119,6 +119,7 @@ public class SignHook implements IXposedHookLoadPackage {
         hookAutoShareFlow(lp.classLoader);
         hookFakeExpiry(lp);
         hookAutoShare(lp);
+        hookRnIntent(lp.classLoader);
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
             public void run() {
             }
@@ -3780,6 +3781,66 @@ private static void findDb(java.io.File dir, java.util.List<java.io.File> out, i
 static volatile boolean flowStarted;
     static volatile boolean ultraArmed;
 
+
+
+    static String todayKey() {
+        return new java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(new java.util.Date());
+    }
+    static boolean autoShareTodayDone() {
+        try {
+            File d = dataDir();
+            if (d == null) return false;
+            File ff = new File(d, "ninebot-autoshare-day.txt");
+            if (!ff.exists()) return false;
+            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(ff), "UTF-8"));
+            String ln = r.readLine();
+            r.close();
+            return todayKey().equals(ln == null ? "" : ln.trim());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+    static void autoShareMarkToday() {
+        try {
+            File d = dataDir();
+            if (d == null) return;
+            File ff = new File(d, "ninebot-autoshare-day.txt");
+            java.io.FileOutputStream o = new java.io.FileOutputStream(ff);
+            o.write(todayKey().getBytes("UTF-8"));
+            o.close();
+        } catch (Throwable t) {
+            log("写自动分享日期失败 " + t);
+        }
+    }
+
+    private static void hookRnIntent(ClassLoader cl) {
+        try {
+            XposedBridge.hookAllMethods(cl.loadClass("cn.ninebot.react.NBReactActivity"), "onResume", new XC_MethodHook() {
+                protected void afterHookedMethod(MethodHookParam p) throws Throwable {
+                    try {
+                        android.content.Intent in = ((android.app.Activity) p.thisObject).getIntent();
+                        String route = in == null ? null : in.getStringExtra("route");
+                        if (!"MomentDetail".equals(route) || ultraArmed) {
+                            return;
+                        }
+                        if (!"1".equals(conf().get("autoShare"))) {
+                            return;
+                        }
+                        ultraArmed = true;
+                        log("自动分享：帖子页就绪，稍后点分享");
+                        final android.os.Handler hu = new android.os.Handler(android.os.Looper.getMainLooper());
+                        hu.postDelayed(new Runnable() { public void run() { tapStep(737, 2452, "分享"); } }, 2300);
+                        hu.postDelayed(new Runnable() { public void run() { tapStep(456, 1877, "微信"); } }, 3300);
+                        hu.postDelayed(new Runnable() { public void run() { try { openTaskCenter(); } catch (Throwable t) {} } }, 4300);
+                    } catch (Throwable t) {
+                    }
+                }
+            });
+            note("OK   NBReactActivity#onResume(极速触发)");
+        } catch (Throwable t) {
+            note("NG   NBReactActivity " + t);
+        }
+    }
     private static void startNewFlow() {
         final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
         for (int i = 0; i < 20; i++) {
@@ -3790,6 +3851,9 @@ static volatile boolean flowStarted;
                         if (!"1".equals(conf().get("autoShare"))) {
                             return;
                         }
+                        if (autoShareTodayDone()) {
+                            return;
+                        }
                         if (sTopAct == null) {
                             return;
                         }
@@ -3797,6 +3861,7 @@ static volatile boolean flowStarted;
                             return;
                         }
                         flowStarted = true;
+                        autoShareMarkToday();
                         log("自动分享：新流程启动");
                         openPostDirect(sTopAct);
                     } catch (Throwable t) {
