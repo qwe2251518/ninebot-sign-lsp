@@ -56,7 +56,7 @@ public class SettingsActivity extends Activity {
     private static final int RED_TINT = 0x1FE64340;
     private static final int RED = 0xFFE64340;
 
-    private static final String VER = "2.4";
+    private static final String VER = "2.5";
 
     private static final String REPO = "https://github.com/qwe2251518/ninebot-sign-lsp";
 
@@ -415,6 +415,55 @@ public class SettingsActivity extends Activity {
             }
         });
         c4.addView(me);
+        final TextView updNote = note("\u5f53\u524d\u7248\u672c " + VER);
+        c4.addView(updNote);
+        final TextView updBtn = mkButton("\u68c0\u6d4b\u66f4\u65b0", TINT, ACCENT, false);
+        final boolean[] updBusy = new boolean[] { false };
+        final String[] updFound = new String[] { null };
+        updBtn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                if (updFound[0] != null) {
+                    openUrl(updFound[0]);
+                    return;
+                }
+                if (updBusy[0]) {
+                    return;
+                }
+                updBusy[0] = true;
+                updBtn.setText("\u6b63\u5728\u68c0\u6d4b\u2026");
+                new Thread(new Runnable() {
+                    public void run() {
+                        String okv = null;
+                        String err = null;
+                        try {
+                            okv = checkUpdate();
+                        } catch (Throwable t) {
+                            err = String.valueOf(t);
+                        }
+                        final String fOk = okv;
+                        final String fErr = err;
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                updBusy[0] = false;
+                                if (fOk != null) {
+                                    String[] p = fOk.split("\\|");
+                                    updNote.setText("\u53d1\u73b0\u65b0\u7248\u672c " + p[0] + "\uff08" + p[2] + " \u5b57\u8282\uff09");
+                                    updFound[0] = p[1];
+                                    updBtn.setText("\u4e0b\u8f7d " + p[0]);
+                                } else if (fErr != null) {
+                                    updNote.setText("\u68c0\u6d4b\u5931\u8d25\uff1a" + fErr);
+                                    updBtn.setText("\u68c0\u6d4b\u66f4\u65b0");
+                                } else {
+                                    updNote.setText("\u5df2\u662f\u6700\u65b0\u7248\u672c");
+                                    updBtn.setText("\u68c0\u6d4b\u66f4\u65b0");
+                                }
+                            }
+                        });
+                    }
+                }).start();
+            }
+        });
+        c4.addView(updBtn);
         TextView reset = mkButton("清空所有配置", RED_TINT, RED, false);
         reset.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
@@ -426,6 +475,83 @@ public class SettingsActivity extends Activity {
         return sc;
     }
 
+
+    static int[] verParts(String v) {
+        java.util.ArrayList<Integer> out = new java.util.ArrayList<Integer>();
+        if (v == null) {
+            return new int[0];
+        }
+        String cur = "";
+        for (int i = 0; i < v.length(); i++) {
+            char c = v.charAt(i);
+            if (c >= '0' && c <= '9') {
+                cur = cur + c;
+            } else if (cur.length() > 0) {
+                out.add(Integer.valueOf(Integer.parseInt(cur)));
+                cur = "";
+            }
+        }
+        if (cur.length() > 0) {
+            out.add(Integer.valueOf(Integer.parseInt(cur)));
+        }
+        int[] a = new int[out.size()];
+        for (int i = 0; i < a.length; i++) {
+            a[i] = out.get(i).intValue();
+        }
+        return a;
+    }
+
+    static int verCmp(String a, String b) {
+        int[] x = verParts(a);
+        int[] y = verParts(b);
+        int n = Math.max(x.length, y.length);
+        for (int i = 0; i < n; i++) {
+            int p = i < x.length ? x[i] : 0;
+            int q = i < y.length ? y[i] : 0;
+            if (p != q) {
+                return p > q ? 1 : -1;
+            }
+        }
+        return 0;
+    }
+
+    static String checkUpdate() throws Exception {
+        java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL("https://api.github.com/repos/qwe2251518/ninebot-sign-lsp/releases/latest").openConnection();
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(8000);
+        c.setRequestProperty("Accept", "application/vnd.github+json");
+        c.setRequestProperty("User-Agent", "ninebot-sign-lsp");
+        int code = c.getResponseCode();
+        if (code != 200) {
+            throw new Exception("HTTP " + code);
+        }
+        java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(c.getInputStream(), "UTF-8"));
+        StringBuilder sb = new StringBuilder();
+        String ln;
+        while ((ln = r.readLine()) != null) {
+            sb.append(ln);
+        }
+        r.close();
+        org.json.JSONObject o = new org.json.JSONObject(sb.toString());
+        String tag = o.optString("tag_name", "");
+        if (tag.startsWith("v")) {
+            tag = tag.substring(1);
+        }
+        org.json.JSONArray as = o.optJSONArray("assets");
+        String url = null;
+        long size = 0;
+        if (as != null && as.length() > 0) {
+            url = as.getJSONObject(0).optString("browser_download_url", null);
+            size = as.getJSONObject(0).optLong("size", 0);
+        }
+        if (url == null) {
+            throw new Exception("no apk asset");
+        }
+        if (verCmp(tag, VER) <= 0) {
+            return null;
+        }
+        return tag + "|" + url + "|" + size;
+    }
     private ScrollView page(String title, String sub) {
         ScrollView sc = new ScrollView(this);
         sc.setBackgroundColor(BG);
