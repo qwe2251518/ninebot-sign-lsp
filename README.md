@@ -97,9 +97,6 @@
   模块的做法是在 App 进程内拿到登录凭据，自己向签到接口发请求，再把结果用 Toast 报出来。
 - 触发时机：冷启动，以及每次有页面回到前台；当天成功过就只记一行日志，不再打扰。
 - 主页那张车图是 Glide 加载的远端图片，模块在同一个 hook 点把图源替换成本地图片。
-- 车控页面/仪表是云端下发的页面文件（`*.nb`）。九号会校验签名并用**各机型不同的 IV** 解密；
-  模块的做法是把自定义页面以**明文**投进车型目录，并让解密这一步返回失败，
-  九号就会走「解密失败当明文用」的兜底路径，于是任何机型都能正常渲染。
 - 「自动领 N 币」：拦截分享拉起微信的最后一步（`MMessageActV2#send`）并直接返回成功，
   分享算完成但不真的发出去；随后打开任务中心 H5，在页面里调用官方领取接口把奖励领掉。
 
@@ -118,7 +115,6 @@
 
 - `module/src/com/ninebotsign/lsp/SignHook.java` —— 注入逻辑与全部功能（单文件）
 - `module/src/com/ninebotsign/lsp/SettingsActivity.java` —— 桌面上的设置界面（纯代码搭 UI，不依赖 androidx）
-- `module/src/com/ninebotsign/lsp/PayloadsPlain.java` —— 内置的页面明文（设置页、仪表页）
 - `module/res/mipmap-*/ic_launcher.png` —— 设置界面的桌面图标
 - `module/AndroidManifest.xml`、`module/assets/xposed_init` —— 模块声明与入口类
 - `probe/` —— 离线自测：`HttpProbe.java`（请求与解析复跑）、`ModuleLogicTest.java`（直接编模块源码跑断言）、
