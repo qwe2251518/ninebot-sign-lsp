@@ -6,6 +6,7 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Base64;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.Toast;
@@ -25,6 +26,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
 import java.util.LinkedHashMap;
@@ -34,6 +36,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+import javax.crypto.Cipher;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -108,7 +115,19 @@ public class SignHook implements IXposedHookLoadPackage {
         hookImageDiag(lp);
         hookVehicleCmds(lp);
         hookConfigDump(lp);
+        hookDashboardSign(lp);
+        hookWebDiag(lp);
+        hookConsoleDiag(lp);
+        hookFakeShare(lp.classLoader);
+        hookAutoShareFlow(lp.classLoader);
+        hookWebIntent(lp.classLoader);
         hookFakeExpiry(lp);
+        hookAutoShare(lp);
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+            public void run() {
+            }
+        }, 12000);
+        startDashboardWatch();
 
         hook(lp, "cn.ninebot.commonlibs.nbnet.BodyParametersProvider", "setDeviceId",
                 new Arg0Saver(new Sink() {
@@ -1443,7 +1462,8 @@ public class SignHook implements IXposedHookLoadPackage {
                 return null;
             }
             String[] keys = {"signEnabled", "vehicleImage", "vehicleImagePath",
-                    "fakeExpiry"};
+                    "dashFix", "openDash", "autoShare", "fakeShare", "postId",
+                    "showEnergyOff", "showNitro"};
             Map<String, String> m = new java.util.LinkedHashMap<String, String>();
             for (int i = 0; i < keys.length; i++) {
                 String v = p.getString(keys[i], "");
@@ -1557,7 +1577,8 @@ public class SignHook implements IXposedHookLoadPackage {
             log("设置界面：已写入 ninebot-sign.conf（" + text.length() + " 字节，来源="
                     + (viaProvider ? "内容提供者" : "SharedPreferences")
                     + (text.contains("signEnabled=0") ? "，签到=关" : "，签到=开")
-                    + (text.contains("vehicleImage=1") ? "，车图=开" : "，车图=关") + "）");
+                    + (text.contains("vehicleImage=1") ? "，车图=开" : "，车图=关")
+                    + "）");
         } catch (Throwable t) {
             logUiWarn("设置界面：同步失败 " + t);
         }
@@ -1713,8 +1734,78 @@ public class SignHook implements IXposedHookLoadPackage {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam p) {
                         try {
-                            log("动态配置：要解密 "
-                                    + (p.args != null && p.args.length > 1 ? p.args[1] : "?"));
+                            Object a0 = p.args != null && p.args.length > 0 ? p.args[0] : null;
+                            String nm = p.args != null && p.args.length > 1 ? String.valueOf(p.args[1]) : "?";
+                            String info = "?";
+                            int alen = -1;
+                            if (a0 instanceof String) {
+                                String s0 = (String) a0;
+                                alen = s0.length();
+                                info = "String(" + alen + ") " + s0.substring(0, Math.min(30, alen));
+                            } else if (a0 instanceof byte[]) {
+                                byte[] b0 = (byte[]) a0;
+                                alen = b0.length;
+                                info = "byte[" + alen + "]";
+                                try {
+                                    info += " " + new String(b0, 0, Math.min(30, alen), "UTF-8");
+                                } catch (Throwable t2) {
+                                }
+                            } else if (a0 != null) {
+                                info = a0.getClass().getName();
+                            }
+
+                            if (alen > 20000 || nm.toLowerCase().contains("setting")) {
+                                log("动态配置：要解密 name=" + nm + " args=" + info);
+                            }
+                        } catch (Throwable t) {
+                        }
+                    }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            Object r = p.getResult();
+                            if (r instanceof String) {
+                                String s = (String) r;
+                                if (s.length() > 20000) {
+                                    log("动态配置：解密结果 String(" + s.length() + ") 含氮气="
+                                            + s.contains("string.nitro_speed") + " 含关闭="
+                                            + s.contains("setting_tap_lock_state_off") + " 开头="
+                                            + s.substring(0, Math.min(40, s.length())));
+                                }
+                            } else if (r instanceof byte[]) {
+                                byte[] b = (byte[]) r;
+                                if (b.length > 20000) {
+                                    String s = new String(b, "UTF-8");
+                                    log("动态配置：解密结果 byte[" + b.length + "] 含氮气="
+                                            + s.contains("string.nitro_speed") + " 含关闭="
+                                            + s.contains("setting_tap_lock_state_off"));
+                                }
+                            }
+                        } catch (Throwable t) {
+                        }
+                    }
+                });
+
+        hook(lp, "cn.ninebot.library.bluetooth.dynamic.utils.UtilsKt", "decrypt",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            if (!dashFixOn()) {
+                                return;
+                            }
+                            Object a0 = p.args != null && p.args.length > 0 ? p.args[0] : null;
+                            if (!(a0 instanceof String)) {
+                                return;
+                            }
+                            String c = ((String) a0).trim();
+
+                            if (!c.startsWith("{")) {
+                                return;
+                            }
+                            p.setResult(null);
+                            log("仪表修复：页面是明文，让九号走「解密失败当明文」那条路（" + c.length() + " 字符）");
                         } catch (Throwable t) {
                         }
                     }
@@ -1857,92 +1948,41 @@ public class SignHook implements IXposedHookLoadPackage {
                         Thread.sleep(9000L);
                     } catch (Throwable t) {
                     }
-                    dumpDynamicConfigOnce();
+                    if (!confOn("diag", false)) {
+                        return;
+                    }
                 }
             }).start();
         } catch (Throwable t) {
         }
 
+        try {
+        } catch (Throwable t) {
+        }
     }
 
     static boolean dynCfgDumped = false;
+static boolean needleHunted = false;static int dynCfgLogs = 0;
 
-    static void dumpDynamicConfigOnce() {
-        if (dynCfgDumped) {
+    static void listTree(File dir, int depth, StringBuilder sb) {
+        if (dir == null || !dir.exists() || depth > 4) {
             return;
         }
-        dynCfgDumped = true;
-        try {
-            Context c = appCtx;
-            if (c == null) {
-                log("动态配置：上下文还没好，跳过");
-                return;
+        File[] kids = dir.listFiles();
+        if (kids == null) {
+            return;
+        }
+        for (int i = 0; i < kids.length; i++) {
+            File f = kids[i];
+            if (f.isDirectory()) {
+                sb.append(f.getName()).append("/ ");
+                listTree(f, depth + 1, sb);
+            } else {
+                sb.append(f.getName()).append(':').append(f.length()).append(' ');
             }
-            File src = new File(c.getFilesDir(), "dynamic_config_new");
-            File dst = new File(c.getExternalFilesDir(null), "dyncfg");
-            int[] cnt = new int[] { 0 };
-            long[] bytes = new long[] { 0 };
-            File root = c.getFilesDir().getParentFile();
-            log("动态配置：扫描 " + root);
-            copyTree(src, dst, 0, cnt, bytes);
-            copyTree(new File(root, "shared_prefs"), new File(dst, "_shared_prefs"), 0, cnt, bytes);
-            copyTree(new File(root, "databases"), new File(dst, "_databases"), 0, cnt, bytes);
-            copyTree(c.getFilesDir(), new File(dst, "_files"), 0, cnt, bytes);
-            log("动态配置：已导出 " + cnt[0] + " 个文件 / " + bytes[0] + " 字节 → " + dst);
-        } catch (Throwable t) {
-            log("动态配置：导出失败 " + t);
         }
     }
-
-    static int dynCfgLogs = 0;
-
-    static void copyTree(File src, File dst, int depth, int[] cnt, long[] bytes) {
-        if (src == null || !src.exists() || depth > 3) {
-            return;
-        }
-        if (src.isDirectory()) {
-            File[] kids = src.listFiles();
-            if (kids == null) {
-                return;
-            }
-            for (int i = 0; i < kids.length; i++) {
-                copyTree(kids[i], new File(dst, kids[i].getName()), depth + 1, cnt, bytes);
-            }
-            return;
-        }
-        long len = src.length();
-        if (dynCfgLogs < 90) {
-            dynCfgLogs++;
-            log("动态配置：文件 " + src.getAbsolutePath() + " " + len + "B");
-        }
-        if (len <= 0 || len > 1024L * 1024L || bytes[0] > 24L * 1024 * 1024) {
-            return;
-        }
-        String n = src.getName().toLowerCase();
-        if (n.endsWith(".log") || n.endsWith(".mp4") || n.endsWith(".apk") || n.endsWith(".so")
-                || n.endsWith(".dex") || n.endsWith(".ttf") || n.endsWith(".mp3")) {
-            return;
-        }
-        try {
-            if (dst.getParentFile() != null) {
-                dst.getParentFile().mkdirs();
-            }
-            java.io.FileInputStream in = new java.io.FileInputStream(src);
-            java.io.FileOutputStream out = new java.io.FileOutputStream(dst);
-            byte[] buf = new byte[8192];
-            int r;
-            while ((r = in.read(buf)) > 0) {
-                out.write(buf, 0, r);
-            }
-            in.close();
-            out.close();
-            cnt[0]++;
-            bytes[0] += len;
-        } catch (Throwable t) {
-        }
-    }
-
-    static boolean protoLogged = false;
+static boolean protoLogged = false;
     static boolean cmdMapDumped = false;
 
     static void dumpCommandMapOnce(Object factory) {
@@ -2144,6 +2184,10 @@ public class SignHook implements IXposedHookLoadPackage {
         }
     }
 
+    private static java.lang.reflect.Method mDevSendBytes;
+    private static java.lang.Class<?> clsFunction1;
+    private static boolean vcmdWatchStarted;
+
     static ClassLoader hostCl;
 
     static Class<?> hostClass(String name) throws ClassNotFoundException {
@@ -2152,6 +2196,1170 @@ public class SignHook implements IXposedHookLoadPackage {
             throw new ClassNotFoundException(name + "（宿主 ClassLoader 还没拿到）");
         }
         return Class.forName(name, false, cl);
+    }
+
+    static Object connectedVehicle() {
+        try {
+            Class<?> c = hostClass("cn.ninebot.library.bluetooth.dynamic.DynamicConfigManager");
+            Object companion = c.getField("Companion").get(null);
+            Object mgr = companion.getClass().getMethod("getInstance").invoke(companion);
+            if (mgr == null) {
+                return null;
+            }
+            java.lang.reflect.Field f = c.getDeclaredField("connectedDeviceList");
+            f.setAccessible(true);
+            Object list = f.get(mgr);
+            if (list instanceof java.util.List) {
+                java.util.List<?> l = (java.util.List<?>) list;
+                if (!l.isEmpty()) {
+                    return l.get(0);
+                }
+            }
+        } catch (Throwable t) {
+            log("车控：取已连接设备失败 " + t);
+        }
+        return null;
+    }
+
+    static Object vehicleCallback(final String tag) {
+        try {
+            if (clsFunction1 == null) {
+                clsFunction1 = hostClass("kotlin.jvm.functions.Function1");
+            }
+            final Class<?> f1 = clsFunction1;
+            return java.lang.reflect.Proxy.newProxyInstance(f1.getClassLoader(), new Class<?>[] { f1 },
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] a) {
+                            try {
+                                String s = "";
+                                if (a != null) {
+                                    for (int i = 0; i < a.length; i++) {
+                                        s += (i == 0 ? "" : ", ") + describe(a[i]);
+                                    }
+                                }
+                                log("车控回调 " + tag + " → " + m.getName() + "(" + s + ")");
+                            } catch (Throwable t) {
+                            }
+                            return null;
+                        }
+                    });
+        } catch (Throwable t) {
+            log("车控：建回调失败 " + t);
+            return null;
+        }
+    }
+
+    static String describe(Object o) {
+        if (o == null) {
+            return "null";
+        }
+        if (o instanceof byte[]) {
+            return "bytes[" + ((byte[]) o).length + "] " + hex((byte[]) o);
+        }
+        if (o instanceof Number || o instanceof Boolean || o instanceof String) {
+            return String.valueOf(o);
+        }
+        return o.getClass().getSimpleName() + "@" + Integer.toHexString(o.hashCode());
+    }
+
+    static boolean sendVehicleCmd(String name, byte[] data) {
+        Object dev = connectedVehicle();
+        if (dev == null) {
+            log("车控：没有已连接的车，发不了 " + name);
+            return false;
+        }
+        try {
+            if (mDevSendBytes == null) {
+                mDevSendBytes = dev.getClass().getMethod("sendCommand", String.class, byte[].class,
+                        boolean.class, hostClass("kotlin.jvm.functions.Function1"));
+            }
+            String tag = name + (data == null ? "(读)" : " " + hex(data));
+            mDevSendBytes.invoke(dev, name, data, Boolean.FALSE, vehicleCallback(tag));
+            log("车控：已交给发送链路 " + tag);
+            return true;
+        } catch (Throwable t) {
+            log("车控：发送失败 " + name + " " + t);
+            return false;
+        }
+    }
+
+    static byte[] parseBytesArg(String s) {
+        if (s == null || s.trim().length() == 0) {
+            return null;
+        }
+        String[] parts = s.trim().split("[,;\\s]+");
+        byte[] out = new byte[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            String p = parts[i].trim();
+            try {
+                if (p.startsWith("0x") || p.startsWith("0X")) {
+                    out[i] = (byte) Integer.parseInt(p.substring(2), 16);
+                } else {
+                    out[i] = (byte) Integer.parseInt(p);
+                }
+            } catch (Throwable t) {
+                out[i] = 0;
+            }
+        }
+        return out;
+    }
+
+    static byte[] bytesOf(Object o) {
+        if (o == null) {
+            return null;
+        }
+        if (o instanceof byte[]) {
+            return (byte[]) o;
+        }
+        try {
+            java.lang.reflect.Method m = o.getClass().getMethod("getData");
+            Object r = m.invoke(o);
+            if (r instanceof byte[]) {
+                return (byte[]) r;
+            }
+        } catch (Throwable t) {
+        }
+        try {
+            java.lang.reflect.Method m = o.getClass().getMethod("getValue");
+            Object r = m.invoke(o);
+            if (r instanceof byte[]) {
+                return (byte[]) r;
+            }
+        } catch (Throwable t) {
+        }
+        return null;
+    }
+
+    static boolean readGearData() {
+        boolean a = sendVehicleCmd("rGearData1", null);
+        boolean b = sendVehicleCmd("rGearData2", null);
+        return a || b;
+    }
+
+    static boolean setNitroSpeed(final int on) {
+        if (connectedVehicle() == null) {
+            log("车控：没有已连接的车，改不了氮气加速");
+            return false;
+        }
+        byte[] v = new byte[] { (byte) (on & 0xFF), (byte) ((on >> 8) & 0xFF) };
+        boolean a = sendVehicleCmd("setGearNitroSpeed", v);
+        boolean b = sendVehicleCmd("setGearNitroSpeed2", v);
+        log("车控：氮气加速=" + on + "（S档 " + a + " / 二档 " + b + "）");
+        readGearData();
+        return a || b;
+    }
+
+    static final String DCM = "cn.ninebot.library.bluetooth.dynamic.DynamicConfigManager";
+
+    static final String DASH_NB = "device_ui_dashboard.nb";
+
+    static final String[] DASH_PICK_PATHS = {
+            "/sdcard/Android/data/cn.ninebot.ninebot/files/" + DASH_NB,
+            "/sdcard/ninebot/" + DASH_NB,
+            "/storage/emulated/0/ninebot/" + DASH_NB,
+    };
+    static volatile boolean dashHookDone = false;
+    static volatile boolean dashWatchStarted = false;
+
+    static volatile boolean dashOpenHookDone = false;
+
+    static volatile String dashAppliedSig = "";
+    static volatile long dashAppliedAt = -1L;
+
+    static boolean dashFixOn() {
+        try {
+            String v = conf().get("dashFix");
+            return v != null && ConfText.on(v);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    static void killCheckSign(Object obj) {
+        try {
+            if (obj != null) {
+                XposedHelpers.setBooleanField(obj, "mCheckSign", false);
+            }
+        } catch (Throwable t) {
+        }
+    }
+
+    private void hookDashboardSign(final XC_LoadPackage.LoadPackageParam lp) {
+        try {
+            final Class<?> c = XposedHelpers.findClass(DCM, lp.classLoader);
+
+            XposedBridge.hookAllConstructors(c, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    if (dashFixOn()) {
+                        killCheckSign(p.thisObject);
+                    }
+                }
+            });
+
+            XposedBridge.hookAllMethods(c, "setMCheckSign", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    if (!dashFixOn()) {
+                        return;
+                    }
+                    killCheckSign(p.thisObject);
+                    p.setResult(null);
+                }
+            });
+
+            XposedBridge.hookAllMethods(c, "getMCheckSign", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    if (dashFixOn()) {
+                        p.setResult(Boolean.FALSE);
+                    }
+                }
+            });
+
+            String[] names = {"checkSign", "isCheckSignPass"};
+            for (int i = 0; i < names.length; i++) {
+                XposedBridge.hookAllMethods(c, names[i], new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        if (!dashFixOn()) {
+                            return;
+                        }
+                        killCheckSign(p.thisObject);
+                        if (p.method instanceof java.lang.reflect.Method
+                                && ((java.lang.reflect.Method) p.method).getReturnType() == boolean.class) {
+                            p.setResult(Boolean.TRUE);
+                        }
+                    }
+                });
+            }
+            dashHookDone = true;
+            log("仪表修复：已挂钩 " + DCM + "（mCheckSign / getMCheckSign / checkSign）");
+
+            try {
+                Class<?> ci = XposedHelpers.findClass(
+                        "cn.ninebot.device.dynamic.ConfigInterfaceImpl", lp.classLoader);
+                XposedBridge.hookAllMethods(ci, "checkSign", new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        if (!dashFixOn()) {
+                            return;
+                        }
+                        if (p.method instanceof java.lang.reflect.Method
+                                && ((java.lang.reflect.Method) p.method).getReturnType() == boolean.class) {
+                            p.setResult(Boolean.TRUE);
+                        }
+                    }
+                });
+                log("仪表修复：已挂钩 ConfigInterfaceImpl#checkSign（验签直接放行）");
+            } catch (Throwable t) {
+                log("仪表修复：ConfigInterfaceImpl#checkSign 挂钩失败（不影响其它几处）：" + t);
+            }
+
+            try {
+                Class<?> eu = XposedHelpers.findClass(
+                        "cn.ninebot.tools.util.EncryptionUtils", lp.classLoader);
+                XposedBridge.hookAllMethods(eu, "rsaCheckSign", new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        if (dashFixOn()) {
+                            p.setResult(Boolean.TRUE);
+                        }
+                    }
+                });
+                XposedBridge.hookAllMethods(eu, "rsaCheckSign$default", new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam p) {
+                        if (dashFixOn()) {
+                            p.setResult(Boolean.TRUE);
+                        }
+                    }
+                });
+                log("仪表修复：已挂钩 EncryptionUtils#rsaCheckSign（兜底）");
+            } catch (Throwable t) {
+                log("仪表修复：EncryptionUtils 没找到（不影响）：" + t);
+            }
+        } catch (Throwable t) {
+            log("仪表修复：挂钩失败 " + t);
+        }
+    }
+
+    static List<File> dashCodeDirs() {
+        ArrayList<File> out = new ArrayList<File>();
+        try {
+            Context c = appCtx;
+            if (c == null) {
+                return out;
+            }
+            File[] kids = new File(c.getFilesDir(), "dynamic_config_new").listFiles();
+            if (kids != null) {
+                for (int i = 0; i < kids.length; i++) {
+                    File code = new File(kids[i], "code");
+                    if (code.isDirectory()) {
+                        out.add(code);
+                    }
+                }
+            }
+        } catch (Throwable t) {
+        }
+        return out;
+    }
+
+    static List<File> dashSources() {
+        ArrayList<File> out = new ArrayList<File>();
+        ArrayList<File> dirs = new ArrayList<File>();
+        try {
+            Context c = appCtx;
+            if (c != null) {
+                dirs.add(c.getFilesDir());
+                File ext = c.getExternalFilesDir(null);
+                if (ext != null) {
+                    dirs.add(ext);
+                }
+            }
+        } catch (Throwable t) {
+        }
+        for (int i = 0; i < DASH_PICK_PATHS.length; i++) {
+            try {
+                File parent = new File(DASH_PICK_PATHS[i]).getParentFile();
+                if (parent != null && !dirs.contains(parent)) {
+                    dirs.add(parent);
+                }
+            } catch (Throwable t) {
+            }
+        }
+        for (int i = 0; i < dirs.size(); i++) {
+            File[] fs = dirs.get(i).listFiles();
+            if (fs == null) {
+                continue;
+            }
+            for (int j = 0; j < fs.length; j++) {
+                File f = fs[j];
+                if (f.isFile() && f.length() > 100 && f.getName().endsWith(".nb") && !out.contains(f)) {
+                    out.add(f);
+                }
+            }
+        }
+        return out;
+    }
+
+    static final String SETTINGS_NB = "device_ui_settings.nb";
+
+    static int settingsVariant() {
+        int i = 0;
+        if (confOn("showEnergyOff", false)) {
+            i |= 1;
+        }
+        if (confOn("showNitro", false)) {
+            i |= 2;
+        }
+        return i;
+    }
+
+    static boolean settingsManaged() {
+        try {
+            Map<String, String> c = conf();
+            return c.containsKey("showEnergyOff") || c.containsKey("showNitro");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    static String pagePlain(String name) {
+        try {
+            if (name == null) {
+                return null;
+            }
+            String n = name.toLowerCase();
+            if (n.contains("device_ui_settings")) {
+                if (!settingsManaged()) {
+                    return null;
+                }
+                return PayloadsPlain.SETTINGS_VARIANTS[settingsVariant()];
+            }
+            if (n.contains("device_ui_dashboard")) {
+                return PayloadsPlain.DASHBOARD;
+            }
+        } catch (Throwable t) {
+        }
+        return null;
+    }
+
+    static byte[] settingsPayload() {
+        try {
+            return PayloadsPlain.SETTINGS_VARIANTS[settingsVariant()].getBytes("UTF-8");
+        } catch (Throwable t) {
+            log("仪表修复：设置页变体取字节失败 " + t);
+            return null;
+        }
+    }
+
+    static final String NB_KEY = "TOGfX#qkYm@0t{83";
+
+    private static byte[] nbIvCache = null;
+    private static boolean nbIvTried = false;
+
+    static final List<String> skippedSources = new ArrayList<String>();
+
+    static final Map<String, Integer> payloadLen = new LinkedHashMap<String, Integer>();
+
+    static final Map<String, byte[]> payloadHead = new LinkedHashMap<String, byte[]>();
+
+    static boolean sameHead(File dst, byte[] head) {
+        if (head == null) {
+            return false;
+        }
+        FileInputStream in = null;
+        try {
+            in = new FileInputStream(dst);
+            byte[] got = new byte[head.length];
+            int off = 0;
+            while (off < head.length) {
+                int n = in.read(got, off, head.length - off);
+                if (n <= 0) {
+                    return false;
+                }
+                off += n;
+            }
+            return Arrays.equals(got, head);
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (Throwable t) {
+                }
+            }
+        }
+    }
+
+    static byte[] head32(byte[] data) {
+        return data.length >= 32 ? Arrays.copyOf(data, 32) : data;
+    }
+
+    static byte[] officialNb(String name) {
+        try {
+            File root = new File(appCtx.getFilesDir(), "dynamic_config_new");
+            File[] kids = root.listFiles();
+            if (kids == null) {
+                return null;
+            }
+            for (int i = 0; i < kids.length; i++) {
+                File z = kids[i];
+                if (!z.isFile() || !z.getName().endsWith(".zip")) {
+                    continue;
+                }
+                ZipFile zf = null;
+                try {
+                    zf = new ZipFile(z);
+                    String[] cands = {"encrypt/code/" + name, "code/" + name, name};
+                    for (int c = 0; c < cands.length; c++) {
+                        ZipEntry e = zf.getEntry(cands[c]);
+                        if (e == null) {
+                            continue;
+                        }
+                        InputStream in = zf.getInputStream(e);
+                        try {
+                            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                            byte[] buf = new byte[8192];
+                            int n;
+                            while ((n = in.read(buf)) > 0) {
+                                bo.write(buf, 0, n);
+                            }
+                            byte[] out = bo.toByteArray();
+                            log("仪表修复：从 " + z.getName() + " 取到官方 " + name + "（" + out.length + " 字节）");
+                            return out;
+                        } finally {
+                            try {
+                                in.close();
+                            } catch (Throwable t) {
+                            }
+                        }
+                    }
+                } catch (Throwable t) {
+                    log("仪表修复：读 " + z.getName() + " 失败 " + t);
+                } finally {
+                    if (zf != null) {
+                        try {
+                            zf.close();
+                        } catch (Throwable t) {
+                        }
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            log("仪表修复：找官方页面文件出错 " + t);
+        }
+        return null;
+    }
+
+    static byte[] aesBlockDecrypt(byte[] block16) throws Exception {
+        Cipher c = Cipher.getInstance("AES/ECB/NoPadding");
+        c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(NB_KEY.getBytes("UTF-8"), "AES"));
+        return c.doFinal(block16);
+    }
+
+    static byte[] aesCbc(byte[] data, byte[] iv, int mode) throws Exception {
+        Cipher c = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        c.init(mode, new SecretKeySpec(NB_KEY.getBytes("UTF-8"), "AES"), new IvParameterSpec(iv));
+        return c.doFinal(data);
+    }
+
+    static byte[] deriveIv(byte[] ct, byte[] plainPrefix) {
+        try {
+            if (ct == null || ct.length < 32 || ct.length % 16 != 0 || plainPrefix.length < 16) {
+                return null;
+            }
+            byte[] dk1 = aesBlockDecrypt(Arrays.copyOfRange(ct, 0, 16));
+            byte[] iv = new byte[16];
+            for (int i = 0; i < 16; i++) {
+                iv[i] = (byte) (dk1[i] ^ plainPrefix[i]);
+            }
+            String s = new String(aesCbc(ct, iv, Cipher.DECRYPT_MODE), "UTF-8").trim();
+            if (!s.startsWith("{") || !s.endsWith("}") || !s.contains("\"view\"")) {
+                return null;
+            }
+            return iv;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    static byte[] nbIv() {
+        if (nbIvCache != null) {
+            return nbIvCache.length == 0 ? null : nbIvCache;
+        }
+        if (nbIvTried) {
+            return null;
+        }
+        nbIvTried = true;
+        nbIvCache = new byte[0];
+        try {
+            byte[] off = officialNb(SETTINGS_NB);
+            if (off == null) {
+                log("仪表修复：没找到九号官方页面文件（dynamic_config_new/*.zip 里的 encrypt/code/" + SETTINGS_NB
+                        + "），推导不出本机 IV —— 为了不把页面弄坏，这次不投内置变体");
+                return null;
+            }
+            byte[] ct = Base64.decode(new String(off, "UTF-8").trim(), Base64.DEFAULT);
+            byte[] iv = deriveIv(ct, PayloadsPlain.SETTINGS_V0.getBytes("UTF-8"));
+            if (iv == null) {
+                log("仪表修复：本机 IV 推导失败（官方文件解出来不是页面 JSON）—— 不投内置变体");
+                return null;
+            }
+            nbIvCache = iv;
+            log("仪表修复：本机 IV 推导成功 " + new String(iv, "ISO-8859-1"));
+            return iv;
+        } catch (Throwable t) {
+            log("仪表修复：推导本机 IV 出错 " + t);
+            return null;
+        }
+    }
+
+    static byte[] encryptNb(byte[] plainJson) {
+        byte[] iv = nbIv();
+        if (iv == null) {
+            return null;
+        }
+        try {
+            return Base64.encodeToString(aesCbc(plainJson, iv, Cipher.ENCRYPT_MODE), Base64.NO_WRAP)
+                    .getBytes("UTF-8");
+        } catch (Throwable t) {
+            log("仪表修复：加密页面失败 " + t);
+            return null;
+        }
+    }
+
+    static byte[] preparePayload(byte[] raw, String name) {
+        try {
+            String own = pagePlain(name);
+            if (own != null) {
+                return own.getBytes("UTF-8");
+            }
+            String t = new String(raw, "UTF-8").trim();
+            if (t.startsWith("{")) {
+                byte[] enc = encryptNb(t.getBytes("UTF-8"));
+                if (enc != null) {
+                    log("仪表修复：" + name + " 是明文，已按本机 IV 加密（" + enc.length + " 字节）");
+                }
+                return enc;
+            }
+            byte[] iv = nbIv();
+            if (iv != null) {
+                byte[] pt = aesCbc(Base64.decode(t, Base64.DEFAULT), iv, Cipher.DECRYPT_MODE);
+                if (new String(pt, "UTF-8").trim().startsWith("{")) {
+                    return raw;
+                }
+            }
+            log("仪表修复：" + name + " 本机解不开（不是按本机 IV 加密的成品？），跳过不投");
+            return null;
+        } catch (Throwable t) {
+            log("仪表修复：处理 " + name + " 出错 " + t);
+            return null;
+        }
+    }
+
+    static int writePayload(String name, byte[] data, String why) {
+        int n = 0;
+        List<File> dirs = dashCodeDirs();
+        payloadLen.put(name, Integer.valueOf(data.length));
+        byte[] head = head32(data);
+        payloadHead.put(name, head);
+        for (int i = 0; i < dirs.size(); i++) {
+            File dst = new File(dirs.get(i), name);
+            try {
+                if (dst.isFile() && dst.length() == data.length) {
+                    if (sameHead(dst, head)) {
+                        continue;
+                    }
+
+                    log("仪表修复：" + dst.getAbsolutePath() + " 长度对得上但内容不是这份（旧 IV？），覆盖重写");
+                }
+                FileOutputStream o = new FileOutputStream(dst);
+                try {
+                    o.write(data);
+                    o.flush();
+                } finally {
+                    try {
+                        o.close();
+                    } catch (Throwable t) {
+                    }
+                }
+                n++;
+                log("仪表修复：" + why + " → 已写入 " + dst.getAbsolutePath()
+                        + "（" + data.length + " 字节）");
+            } catch (Throwable t) {
+                log("仪表修复：写 " + name + " 失败 " + t);
+            }
+        }
+        return n;
+    }
+
+    static boolean nbPlainOk(byte[] pt) {
+        try {
+            String s = new String(pt, "UTF-8").trim();
+            return s.startsWith("{") && s.endsWith("}");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    static boolean nbLoadable(File f) {
+        byte[] iv = nbIv();
+        if (iv == null || f == null || !f.isFile()) {
+            return false;
+        }
+        try {
+            byte[] raw = readAll(f);
+            String t = new String(raw, "UTF-8").trim();
+            if (t.startsWith("{")) {
+                return true;
+            }
+            return nbPlainOk(aesCbc(Base64.decode(t, Base64.DEFAULT), iv, Cipher.DECRYPT_MODE));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    static int healBadTarget(String name, byte[] badRaw) {
+        if (nbIv() == null) {
+            return 0;
+        }
+        List<File> dirs = dashCodeDirs();
+        if (dirs.isEmpty()) {
+            return 0;
+        }
+        byte[] badHead = badRaw == null ? null : head32(badRaw);
+        byte[] off = officialNb(name);
+        int fixed = 0;
+        for (int i = 0; i < dirs.size(); i++) {
+            File dst = new File(dirs.get(i), name);
+            try {
+                if (!dst.isFile()) {
+                    continue;
+                }
+                if (badHead != null && !(dst.length() == badRaw.length && sameHead(dst, badHead))) {
+                    continue;
+                }
+                if (nbLoadable(dst)) {
+                    continue;
+                }
+                if (off != null) {
+                    writePayload(name, off, "还原官方页面（原来那份本机解不开）");
+                    fixed++;
+                } else if (dst.delete()) {
+                    log("仪表修复：" + name + " 在 " + dst.getAbsolutePath()
+                            + " 那份本机解不开、又找不到官方文件，已删掉让九号自己重下");
+                    fixed++;
+                }
+            } catch (Throwable t) {
+                log("仪表修复：修 " + name + " 出错 " + t);
+            }
+        }
+        if (fixed > 0) {
+            log("仪表修复：把 " + name + " 还原成官方页面（修好 " + fixed + " 处）——页面原来本机解不开，所以是空白/报加载失败");
+        }
+        return fixed;
+    }
+
+    static String dashSig() {
+        StringBuilder sb = new StringBuilder();
+        List<File> srcs = dashSources();
+        for (int i = 0; i < srcs.size(); i++) {
+            File f = srcs.get(i);
+            if (SETTINGS_NB.equals(f.getName())) {
+                continue;
+            }
+            sb.append(f.getName()).append(':').append(f.length()).append(';');
+        }
+        sb.append("SET:").append(settingsManaged() ? settingsVariant() : -1).append(';');
+        return sb.toString();
+    }
+
+    static boolean dashDrift() {
+        List<File> dirs = dashCodeDirs();
+        List<File> srcs = dashSources();
+        for (int i = 0; i < srcs.size(); i++) {
+            File s = srcs.get(i);
+            if (SETTINGS_NB.equals(s.getName())) {
+                continue;
+            }
+            if (skippedSources.contains(s.getName())) {
+                continue;
+            }
+            Integer want = payloadLen.get(s.getName());
+            byte[] wh = payloadHead.get(s.getName());
+            if (want == null || wh == null) {
+                return true;
+            }
+            for (int j = 0; j < dirs.size(); j++) {
+                File dst = new File(dirs.get(j), s.getName());
+                if (!dst.isFile() || dst.length() != want.intValue() || !sameHead(dst, wh)) {
+                    return true;
+                }
+            }
+        }
+        if (settingsManaged()) {
+            byte[] set = settingsPayload();
+            if (set != null) {
+                byte[] sh = head32(set);
+                for (int j = 0; j < dirs.size(); j++) {
+                    File dst = new File(dirs.get(j), SETTINGS_NB);
+                    if (!dst.isFile() || dst.length() != set.length || !sameHead(dst, sh)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    static byte[] readAll(File f) throws Exception {
+        FileInputStream in = new FileInputStream(f);
+        try {
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bo.write(buf, 0, n);
+            }
+            return bo.toByteArray();
+        } finally {
+            try {
+                in.close();
+            } catch (Throwable t) {
+            }
+        }
+    }
+
+    static boolean deployDashboard(String why) {
+        List<File> dirs = dashCodeDirs();
+        if (dirs.isEmpty()) {
+            log("仪表修复：还没有 dynamic_config_new/<车号>/code 目录（车没连过蓝牙？）");
+            return false;
+        }
+        int n = 0;
+
+        if (settingsManaged()) {
+            byte[] set = settingsPayload();
+            if (set != null) {
+                n += writePayload(SETTINGS_NB, set, why + "·设置页变体 s" + settingsVariant());
+            }
+        }
+
+        List<File> srcs = dashSources();
+        boolean any = n > 0;
+        int skip = 0;
+        skippedSources.clear();
+        List<byte[]> badRaws = new ArrayList<byte[]>();
+        for (int s = 0; s < srcs.size(); s++) {
+            File src = srcs.get(s);
+            if (SETTINGS_NB.equals(src.getName())) {
+                continue;
+            }
+            any = true;
+            try {
+                byte[] raw = readAll(src);
+                byte[] use = preparePayload(raw, src.getName());
+                if (use == null) {
+                    skip++;
+                    skippedSources.add(src.getName());
+                    badRaws.add(raw);
+                    continue;
+                }
+                n += writePayload(src.getName(), use, why);
+            } catch (Throwable t) {
+                log("仪表修复：读 " + src.getName() + " 失败 " + t);
+            }
+        }
+
+        for (int i = 0; i < skippedSources.size(); i++) {
+            n += healBadTarget(skippedSources.get(i), badRaws.get(i));
+        }
+        if (!settingsManaged()) {
+
+            n += healBadTarget(SETTINGS_NB, null);
+        }
+        dashAppliedSig = dashSig();
+        dashAppliedAt = System.currentTimeMillis();
+        if (!any) {
+            log("仪表修复：" + why + " → 没找到自定义文件（把 *.nb 放到 " + DASH_PICK_PATHS[0]
+                    + " 那一层，或者在设置界面打开「显示开关」）");
+        } else if (n == 0 && skip == 0) {
+            log("仪表修复：" + why + " → 目录里已经是这些文件了，不重复写");
+        } else if (skip > 0) {
+            log("仪表修复：" + why + " → 有 " + skip + " 个文件本机解不开（多半是别的机型 IV 的成品），已跳过");
+        }
+        return true;
+    }
+
+    static void openDashboard() {
+        if (!dashOpenHookDone) {
+            dashOpenHookDone = true;
+
+            try {
+                XposedHelpers.findAndHookMethod("android.app.Activity", appCtx.getClassLoader(), "finish",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam p) {
+                                try {
+                                    if (p.thisObject != null && p.thisObject.getClass().getName()
+                                            .contains("DashboardActivity")) {
+                                        log("仪表修复：DashboardActivity 自己调了 finish()，栈＝\n"
+                                                + android.util.Log.getStackTraceString(new Throwable()));
+                                    }
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                        });
+            } catch (Throwable ignored) {
+            }
+
+            try {
+                XposedHelpers.findAndHookMethod("android.app.Activity", appCtx.getClassLoader(), "onCreate",
+                        android.os.Bundle.class, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam p) {
+                                try {
+                                    if (p.thisObject == null) {
+                                        return;
+                                    }
+                                    String cn = p.thisObject.getClass().getName();
+
+                                    if (!cn.contains("Dynamic") && !cn.contains("Dashboard")) {
+                                        return;
+                                    }
+                                    android.content.Intent in = ((android.app.Activity) p.thisObject).getIntent();
+                                    android.os.Bundle b = in == null ? null : in.getExtras();
+                                    log("仪表修复：进页面 " + cn
+                                            + " config_name=" + (b == null ? null : b.getString("config_name"))
+                                            + " device_tag=" + (b == null ? null : b.getString("device_tag"))
+                                            + " device_server_id=" + (b == null ? -1 : b.getInt("device_server_id", -1)));
+
+                                    if (b != null) {
+                                        String st = b.getString("device_tag");
+                                        if (st != null && st.length() > 0) {
+                                            writeVtag(st, b.getInt("device_server_id", 0));
+                                        }
+                                    }
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                        });
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            Context c = appCtx;
+            if (c == null) {
+                log("仪表修复：拿不到 App 上下文，拉不起仪表界面");
+                return;
+            }
+            String[] rt = resolveVtag();
+            if (rt[0].length() == 0) {
+
+                log("仪表修复：还没拿到车架号（九号设备列表没加载完），等它 12 秒再开");
+                for (int i = 0; i < 10 && rt[0].length() == 0; i++) {
+                    try {
+                        Thread.sleep(1200L);
+                    } catch (InterruptedException ie) {
+                        break;
+                    }
+                    rt = resolveVtag();
+                }
+            }
+            if (rt[0].length() == 0) {
+                log("仪表修复：还是拿不到车架号，这次不开仪表盘"
+                        + "（先在九号里进一次车辆页，让 App 把设备列表拉出来，再点一次「打开仪表盘」）");
+                toast("九号还没加载完车辆信息，请先进一次车辆页，再点「打开仪表盘」");
+                return;
+            }
+            int vt = 0;
+            try {
+                vt = Integer.parseInt(rt[1]);
+            } catch (Throwable ignored) {
+            }
+            android.content.Intent it = new android.content.Intent();
+            it.setClassName("cn.ninebot.ninebot", "cn.ninebot.device.dynamic.sub.DashboardActivity");
+            it.putExtra("device_server_id", vt);
+            it.putExtra("device_tag", rt[0]);
+            it.putExtra("config_name", "device_ui_dashboard");
+            it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            c.startActivity(it);
+            log("仪表修复：已强制打开仪表界面（device_tag=" + rt[0] + ", vehicleType=" + vt + "）");
+        } catch (Throwable t) {
+            log("仪表修复：拉仪表界面失败 " + t);
+        }
+    }
+
+    static String[] resolveVtag() {
+        Object bean = null;
+        try {
+            Context c = appCtx;
+            ClassLoader cl = c == null ? null : c.getClassLoader();
+            if (cl != null) {
+                Class<?> dm = cl.loadClass("cn.ninebot.device.DeviceManager");
+                bean = staticField(dm, "currentDeviceBean");
+                if (bean == null) {
+                    Object list = staticField(dm, "mAuthDeviceList");
+                    if (list instanceof java.util.List && !((java.util.List) list).isEmpty()) {
+                        bean = ((java.util.List) list).get(0);
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            log("仪表修复：取当前设备失败 " + t);
+        }
+        int vt = 0;
+        String tag = "";
+        if (bean != null) {
+            try {
+                Object v = bean.getClass().getMethod("getVehicleType").invoke(bean);
+                if (v instanceof Integer) {
+                    vt = (Integer) v;
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                Object w = bean.getClass().getMethod("getWnumber").invoke(bean);
+                if (w instanceof String) {
+                    tag = (String) w;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        if (tag != null && tag.length() > 0) {
+            writeVtag(tag, vt);
+            return new String[]{tag, String.valueOf(vt)};
+        }
+        String[] cached = readVtag();
+        if (cached != null) {
+            log("仪表修复：设备列表还没好，用上次记下的车架号 " + cached[0]);
+            return cached;
+        }
+        return new String[]{"", "0"};
+    }
+
+    static File vtagFile() {
+        File dir = dataDir();
+        return dir == null ? null : new File(dir, "ninebot-sign.vtag");
+    }
+
+    static String[] readVtag() {
+        try {
+            File f = vtagFile();
+            if (f == null || !f.exists()) {
+                return null;
+            }
+            BufferedReader r = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(f), "UTF-8"));
+            String tag = r.readLine();
+            String vt = r.readLine();
+            r.close();
+            if (tag == null) {
+                return null;
+            }
+            tag = tag.trim();
+            if (tag.length() == 0) {
+                return null;
+            }
+            return new String[]{tag, vt == null ? "0" : vt.trim()};
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    static void writeVtag(String tag, int vt) {
+        try {
+            if (tag == null || tag.length() == 0) {
+                return;
+            }
+            String[] old = readVtag();
+            if (old != null && tag.equals(old[0]) && String.valueOf(vt).equals(old[1])) {
+                return;
+            }
+            File f = vtagFile();
+            if (f == null) {
+                return;
+            }
+            FileOutputStream fo = new FileOutputStream(f, false);
+            fo.write((tag + "\n" + vt + "\n").getBytes("UTF-8"));
+            fo.close();
+            log("仪表修复：记下车架号 " + tag + "（车型 " + vt + "）");
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static Object staticField(Class<?> cls, String name) {
+        try {
+            java.lang.reflect.Field f = cls.getDeclaredField(name);
+            f.setAccessible(true);
+            return f.get(null);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    static void clearOpenDash() {
+        try {
+            File dir = dataDir();
+            if (dir == null) {
+                return;
+            }
+            File f = new File(dir, "ninebot-sign.conf");
+            if (!f.exists()) {
+                return;
+            }
+            List<String> lines = new ArrayList<String>();
+            BufferedReader r = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(f), "UTF-8"));
+            String ln;
+            boolean hit = false;
+            while ((ln = r.readLine()) != null) {
+                if (ln.trim().startsWith("openDash=")) {
+                    ln = "openDash=0";
+                    hit = true;
+                }
+                lines.add(ln);
+            }
+            r.close();
+            if (!hit) {
+                return;
+            }
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < lines.size(); i++) {
+                sb.append(lines.get(i)).append('\n');
+            }
+            FileOutputStream fo = new FileOutputStream(f, false);
+            fo.write(sb.toString().getBytes("UTF-8"));
+            fo.close();
+
+            confMap = null;
+            confAt = 0L;
+            log("仪表修复：openDash 已复位为 0");
+        } catch (Throwable t) {
+            log("仪表修复：openDash 复位失败（下次开 App 可能还会自动进仪表页）: " + t);
+        }
+    }
+
+    static boolean freshOpenDash(String v) {
+        try {
+            long ts = Long.parseLong(v);
+            long age = System.currentTimeMillis() - ts;
+            return age >= 0L && age < 60000L;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    static void startDashboardWatch() {
+        if (dashWatchStarted) {
+            return;
+        }
+        dashWatchStarted = true;
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                boolean last = false;
+                boolean opened = false;
+
+                String lastReq = "";
+                while (true) {
+                    try {
+                        Thread.sleep(2000);
+                        boolean on = dashFixOn();
+                        if (on && !last) {
+                            last = true;
+                            log("仪表修复：开关已打开（跳过签名校验）");
+                            deployDashboard("开关打开");
+                        } else if (!on && last) {
+                            last = false;
+                            log("仪表修复：开关已关闭");
+                        } else if (on) {
+                            if (!dashSig().equals(dashAppliedSig)) {
+                                deployDashboard("源文件变了");
+                            } else if (dashDrift()) {
+                                deployDashboard("被九号覆盖了，重投");
+                            }
+                        }
+
+                        String od = null;
+                        Map<String, String> up = uiPrefs();
+                        if (up != null) {
+                            od = up.get("openDash");
+                        }
+                        if (od == null) {
+                            od = conf().get("openDash");
+                        }
+                        if (od == null) {
+                            od = "";
+                        }
+                        od = od.trim();
+                        boolean fileFlag = "1".equals(od) || "true".equalsIgnoreCase(od);
+                        boolean uiReq = freshOpenDash(od);
+                        boolean newReq = uiReq && !od.equals(lastReq);
+                        if (newReq) {
+                            lastReq = od;
+                        }
+                        if ((fileFlag && !opened) || newReq) {
+                            opened = true;
+                            openDashboard();
+                            if (fileFlag) {
+
+                                clearOpenDash();
+                            }
+                        } else if (!fileFlag && !uiReq) {
+                            opened = false;
+                        }
+                    } catch (Throwable t2) {
+                    }
+                }
+            }
+        }, "NinebotSign-dash");
+        t.setDaemon(true);
+        t.start();
     }
 
     static boolean fakeExpiryOn() {
@@ -2193,6 +3401,7 @@ public class SignHook implements IXposedHookLoadPackage {
                         if (!(o instanceof android.widget.TextView)) {
                             return;
                         }
+
                         CharSequence cs = ((android.widget.TextView) o).getText();
                         if (cs == null) {
                             return;
@@ -2204,23 +3413,669 @@ public class SignHook implements IXposedHookLoadPackage {
                         ((android.widget.TextView) o).setText(fixed);
                         synchronized (expirySeen) {
                             if (expirySeen.size() < 8 && expirySeen.add(fixed)) {
-                                log("界面文字：" + fixed);
+                                log("界面文字：把有效期那串日期换成 9999.12.31（「" + fixed + "」）");
                             }
                         }
                     } catch (Throwable t) {
                     }
                 }
             });
-            note("OK   android.widget.TextView#setText");
+            note("OK   android.widget.TextView#setText（假有效期）");
         } catch (Throwable t) {
-            note("FAIL android.widget.TextView#setText -> " + t);
+            note("FAIL android.widget.TextView#setText（假有效期） -> " + t);
+            log("界面文字：假有效期 hook 没装上 " + t);
+        }
+    }
+
+    private void hookWebDiag(final XC_LoadPackage.LoadPackageParam lp) {
+        final int[] budget = new int[]{40};
+        try {
+            XposedHelpers.findAndHookMethod("android.webkit.WebView", lp.classLoader, "loadUrl",
+                    String.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) {
+                            try {
+                                if (budget[0] <= 0) {
+                                    return;
+                                }
+                                Object o = p.args[0];
+                                String u = o == null ? "" : String.valueOf(o);
+                                if (u.startsWith("http")) {
+                                    budget[0]--;
+                                    log("H5侦察(loadUrl)：" + (u.length() > 260 ? u.substring(0, 260) : u));
+                                    if (u.indexOf("taskCenter") >= 0) {
+                                        injectTaskH5(p.thisObject);
+                                    }
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+            note("OK   android.webkit.WebView#loadUrl（H5侦察）");
+        } catch (Throwable t) {
+            note("FAIL android.webkit.WebView#loadUrl（H5侦察） -> " + t);
+        }
+        try {
+            XposedHelpers.findAndHookMethod("android.webkit.WebView", lp.classLoader,
+                    "addJavascriptInterface", Object.class, String.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) {
+                            try {
+                                Object obj = p.args[0];
+                                log("H5侦察(JSBridge)：name=" + p.args[1] + " class="
+                                        + (obj == null ? "null" : obj.getClass().getName()));
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+            note("OK   android.webkit.WebView#addJavascriptInterface（H5侦察）");
+        } catch (Throwable t) {
+            note("FAIL android.webkit.WebView#addJavascriptInterface（H5侦察） -> " + t);
+        }
+    }
+
+private void hookConsoleDiag(final XC_LoadPackage.LoadPackageParam lp) {
+        try {
+            XposedHelpers.findAndHookMethod("android.webkit.WebChromeClient", lp.classLoader,
+                    "onConsoleMessage", String.class, int.class, String.class, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam p) {
+                            try {
+                                String msg = String.valueOf(p.args[0]);
+                                if (msg != null && msg.indexOf("[NBTASK]") >= 0) {
+                                    log("H5任务：" + (msg.length() > 3000 ? msg.substring(0, 3000) : msg));
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+            note("OK   WebChromeClient#onConsoleMessage（H5任务抓取）");
+        } catch (Throwable t) {
+            note("FAIL WebChromeClient#onConsoleMessage（H5任务抓取） -> " + t);
+        }
+    }
+
+    private static final String TASK_JS = "(function(){if(window.__nbt4){return}window.__nbt4=1;setTimeout(function(){try{var es=document.querySelectorAll('div,span');for(var i=0;i<es.length;i++){var t=(es[i].textContent||'').trim();if(t==='\u6210\u957f\u4efb\u52a1'){es[i].click();console.log('[NBTASK] tab');break}}}catch(e){}},1200);var L=function(s){try{console.log('[NBTASK] '+s)}catch(e){}};var H=null,SENT={},N=0;var OX=XMLHttpRequest.prototype.open,OS=XMLHttpRequest.prototype.send,OH=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=String(u||'');this.__h={};return OX.apply(this,arguments)};XMLHttpRequest.prototype.setRequestHeader=function(k,v){try{this.__h[k]=v}catch(e){}return OH.apply(this,arguments)};function claim(id){try{if(SENT[id]){return}SENT[id]=1;var h={};for(var k in H){h[k]=H[k]}h['Content-Type']='application/json';var tok=null;try{tok=sessionStorage.getItem('LOGIN_TOKEN')}catch(e){}if(tok&&!h['Authorization']){h['Authorization']=tok}L('claim id='+id+' auth='+(h['Authorization']?'yes':'no'));fetch('https://cn-cbu-gateway.ninebot.com/portal/self-service/task/reward',{method:'POST',headers:h,body:JSON.stringify({taskId:id})}).then(function(r){return r.text()}).then(function(x){L('claim-res '+String(x).slice(0,300))}).catch(function(e){L('claim-err '+e)})}catch(e){L('claim-throw '+e)}}try{XMLHttpRequest.prototype.send=function(b){var t=this;try{if(t.__u&&t.__u.indexOf('ninebot.com')>=0&&N<25){N++;t.addEventListener('load',function(){try{L('XHR '+t.__m+' '+t.__u.split('?')[0]+(b?' BODY='+String(b).slice(0,200):'')+' RESP='+String(t.responseText||'').slice(0,220))}catch(e){}});if(t.__u.indexOf('task/v3/list')>=0){t.addEventListener('load',function(){try{H=t.__h;var j=JSON.parse(t.responseText);var arr=(j&&j.data)||[];for(var i=0;i<arr.length;i++){var it=arr[i];if(it.title&&String(it.title).indexOf('分享')>=0){claim(it.taskId)}}}catch(e){L('parse-err '+e)}})}}}catch(e){}return OS.apply(this,arguments)}}catch(e){}L('installed4')})();";
+
+    private static void injectTaskH5(final Object webView) {
+        try {
+            final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+            final int[] delays = new int[]{250, 600, 1200, 2000};
+            for (int i = 0; i < delays.length; i++) {
+                final int d = delays[i];
+                h.postDelayed(new Runnable() {
+                    public void run() {
+                        try {
+                            XposedHelpers.callMethod(webView, "evaluateJavascript", TASK_JS, null);
+                        } catch (Throwable t) {
+                            log("H5注入失败：" + t);
+                        }
+                    }
+                }, d);
+            }
+        } catch (Throwable t) {
+            log("H5注入失败：" + t);
+        }
+    }
+private static void findDb(java.io.File dir, java.util.List<java.io.File> out, int depth) {
+        if (depth > 3) {
+            return;
+        }
+        java.io.File[] fs = dir.listFiles();
+        if (fs == null) {
+            return;
+        }
+        for (java.io.File f : fs) {
+            if (f.isDirectory()) {
+                findDb(f, out, depth + 1);
+            } else if (f.getName().endsWith(".db") || f.getName().endsWith(".sqlite")) {
+                out.add(f);
+            }
+        }
+    }
+    private static Object m(Object o, String name, Object... args) {
+        try {
+            Class<?> c = o.getClass();
+            for (java.lang.reflect.Method mm : c.getMethods()) {
+                if (!mm.getName().equals(name)) {
+                    continue;
+                }
+                Class<?>[] ps = mm.getParameterTypes();
+                if (ps.length != args.length) {
+                    continue;
+                }
+                boolean ok = true;
+                for (int i = 0; i < ps.length; i++) {
+                    Object a = args[i];
+                    Class<?> p = ps[i];
+                    if (p.isPrimitive()) {
+                        if (!((p == long.class && a instanceof Long) || (p == int.class && a instanceof Integer))) {
+                            ok = false;
+                        }
+                    } else if (a != null && !p.isAssignableFrom(a.getClass())) {
+                        ok = false;
+                    }
+                    if (!ok) {
+                        break;
+                    }
+                }
+                if (ok) {
+                    mm.setAccessible(true);
+                    return mm.invoke(o, args);
+                }
+            }
+        } catch (Throwable t) {
+        }
+        return null;
+    }
+
+    private static final java.util.Set<String> shareSeen = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<String>());
+    private static final java.util.Set<String> urlSeen = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<String>());private static void hookKeyStore(ClassLoader cl) {
+        String[] cls = {"cn.ninebot.commonlibs.keystore.NBKeyStore", "cn.ninebot.commonlibs.keystore.NBKeyStoreKt"};
+        for (String cn : cls) {
+            try {
+                final String tag = cn.substring(cn.lastIndexOf('.') + 1);
+                XposedBridge.hookAllMethods(cl.loadClass(cn), "aesDecryptData", new XC_MethodHook() {
+                    protected void afterHookedMethod(MethodHookParam p) throws Throwable {
+                        Object r = p.getResult();
+                        if (r instanceof String) {
+                            String s = (String) r;
+                            log("解密：" + tag + " -> " + s.substring(0, Math.min(1200, s.length())));
+                        } else {
+                            Object[] as = p.args;
+                            StringBuilder sb = new StringBuilder();
+                            for (int i = 0; i < (as == null ? 0 : as.length) && i < 3; i++) {
+                                sb.append(String.valueOf(as[i])).append(" | ");
+                            }
+                            log("解密：" + tag + " 调参 " + sb + " 结果=" + (r == null ? "null" : r.getClass().getSimpleName()));
+                        }
+                    }
+                });
+                XposedBridge.hookAllMethods(cl.loadClass(cn), "aesDecryptDataSafe", new XC_MethodHook() {
+                    protected void afterHookedMethod(MethodHookParam p) throws Throwable {
+                        Object r = p.getResult();
+                        if (r instanceof String) {
+                            String s = (String) r;
+                            log("解密Safe：" + tag + " -> " + s.substring(0, Math.min(1200, s.length())));
+                        }
+                    }
+                });
+                log("OK   " + cn + " aesDecrypt");
+            } catch (Throwable t) {
+                log("NG   " + cn + " aesDecrypt " + t);
+            }
+        }
+    }private static void hookShareDiag(ClassLoader cl) {
+        String[] cs = {"cn.ninebot.moment.manager.MomentShareManager", "cn.ninebot.moment.manager.MomentShareActivity", "cn.ninebot.moment.track.SpecialShareClick"};
+        for (String cn : cs) {
+            try {
+                final String tag = cn.substring(cn.lastIndexOf('.') + 1);
+
+            } catch (Throwable ig) {
+            }
+            try {
+                Class<?> c = cl.loadClass(cn);
+                for (java.lang.reflect.Method mm : c.getDeclaredMethods()) {
+                    final String mn = mm.getName();
+                    try {
+                        XposedBridge.hookAllMethods(c, mn, new XC_MethodHook() {
+                            protected void afterHookedMethod(MethodHookParam p) throws Throwable {
+                                try {
+                                    Object[] as = p.args;
+                                    StringBuilder sb = new StringBuilder();
+                                    for (int i = 0; i < (as == null ? 0 : as.length) && i < 3; i++) {
+                                        String v = String.valueOf(as[i]);
+                                        sb.append(v.length() > 80 ? v.substring(0, 80) : v).append("¦");
+                                    }
+                                    Object r = p.getResult();
+                                    String rs = r == null ? "null" : String.valueOf(r);
+                                    if (rs.length() > 120) {
+                                        rs = rs.substring(0, 120);
+                                    }
+                                    String tgx = p.method.getDeclaringClass().getSimpleName();
+                                    log("分享：" + tgx + "#" + mn + "(" + sb + ") => " + rs);
+                                } catch (Throwable t) {
+                                }
+                            }
+                        });
+                    } catch (Throwable ig2) {
+                    }
+                }
+                log("OK   " + cn + " 分享钩子");
+            } catch (Throwable t) {
+                log("NG   " + cn + " " + t);
+            }
+        }
+    }private static void hookWxShare(ClassLoader cl) {
+        String[] cls = {"com.tencent.mm.opensdk.openapi.WXApiImplV10", "com.tencent.tauth.Tencent"};
+        String[] mns = {"sendReq", "shareToQQ", "shareToQzone"};
+        for (int i = 0; i < cls.length; i++) {
+            for (String mn : mns) {
+                try {
+                    XposedBridge.hookAllMethods(cl.loadClass(cls[i]), mn, new XC_MethodHook() {
+                        protected void afterHookedMethod(MethodHookParam p) throws Throwable {
+                            try {
+                                StringBuilder sb = new StringBuilder();
+                                StackTraceElement[] st = Thread.currentThread().getStackTrace();
+                                for (int k = 2; k < st.length && k < 8; k++) {
+                                    sb.append(st[k].getClassName().substring(st[k].getClassName().lastIndexOf('.') + 1)).append('.').append(st[k].getMethodName()).append(" | ");
+                                }
+                                log("微信分享：" + p.method.getName() + " => " + p.getResult() + " 调用链 " + sb);
+                            } catch (Throwable t) {
+                            }
+                        }
+                    });
+                    log("OK   " + cls[i] + "#" + mn);
+                } catch (Throwable t) {
+                    log("NG   " + cls[i] + "#" + mn);
+                }
+            }
+        }
+    }private static void hookFakeShare(ClassLoader cl) {
+        try {
+            XposedBridge.hookAllMethods(cl.loadClass("com.tencent.mm.opensdk.channel.MMessageActV2"), "send", new XC_MethodHook() {
+                protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
+                    try {
+                        if (!fakeShareOn()) {
+                            return;
+                        }
+                        p.setResult(Boolean.TRUE);
+                        shareBlocked = true;
+                        log("伪造分享：拦下微信启动（MMessageActV2#send）");
+                    } catch (Throwable t) {
+                    }
+                }
+            });
+            log("OK   MMessageActV2#send(伪造分享)");
+        } catch (Throwable t) {
+            log("NG   MMessageActV2 " + t);
+        }
+    }
+
+    static boolean fakeShareOn() {
+        String v = conf().get("fakeShare");
+        return v != null && (v.equals("1") || v.equals("true") || v.equals("on"));
+    }
+    static android.app.Activity sWebAct;
+    static volatile boolean shareBlocked;
+
+    static boolean autoShareOn() {
+        String v = conf().get("autoShare");
+        return v != null && (v.equals("1") || v.equals("true") || v.equals("on"));
+    }
+
+    private static void tapAt(final android.app.Activity act, final int x, final int y, final String tag) {
+        try {
+            final android.view.View dv = act.getWindow().getDecorView();
+            final long t0 = android.os.SystemClock.uptimeMillis();
+            final android.view.MotionEvent d = android.view.MotionEvent.obtain(t0, t0, android.view.MotionEvent.ACTION_DOWN, x, y, 0);
+            d.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+            final android.view.MotionEvent u = android.view.MotionEvent.obtain(t0, t0 + 60, android.view.MotionEvent.ACTION_UP, x, y, 0);
+            u.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+            dv.post(new Runnable() {
+                public void run() {
+                    dv.dispatchTouchEvent(d);
+                    dv.dispatchTouchEvent(u);
+                }
+            });
+            log("自动分享：" + tag + " (" + x + "," + y + ")");
+        } catch (Throwable t) {
+            log("自动分享：点击失败 " + tag + " " + t);
+        }
+    }
+
+    private static void hookAutoShareFlow(ClassLoader cl) {
+        startNewFlow();
+    }
+    static void openTaskCenter() {
+        try {
+            android.content.Context ctx = (android.content.Context) Class.forName("android.app.AndroidAppHelper").getMethod("currentApplication").invoke(null);
+            if (ctx == null) {
+                log("自动领取：拿不到上下文");
+                return;
+            }
+            String url = "https://h5-bj.ninebot.com/ninebotApp/#/taskCenter?immersed=1&statusbar=light&category=motor&language=zh&app_version=610114116&is_dark=0&androidStatusBarHeight=144";
+            android.content.Intent in = new android.content.Intent();
+            in.setClassName(ctx.getPackageName(), "cn.ninebot.support.web.WebActivity");
+            in.putExtra("web_url", url);
+            in.putExtra("title", "\u4efb\u52a1\u4e2d\u5fc3");
+            in.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(in);
+            final android.os.Handler h2 = new android.os.Handler(android.os.Looper.getMainLooper());
+            h2.postDelayed(new Runnable() {
+                public void run() {
+                    log("自动领取：等待脚本自行拉取成长任务");
+                }
+            }, 7000);
+            log("自动领取：已打开任务中心 H5");
+        } catch (Throwable t) {
+            log("自动领取：打开失败 " + t);
+        }
+    }
+    private static void hookWebIntent(ClassLoader cl) {
+        try {
+            XposedBridge.hookAllMethods(cl.loadClass("cn.ninebot.support.web.WebActivity"), "onCreate", new XC_MethodHook() {
+                protected void afterHookedMethod(MethodHookParam p) throws Throwable {
+                    try {
+                        android.app.Activity a = (android.app.Activity) p.thisObject;
+                        android.content.Intent in = a.getIntent();
+                        android.os.Bundle b = in == null ? null : in.getExtras();
+                        StringBuilder sb = new StringBuilder();
+                        if (b != null) {
+                            for (String k : b.keySet()) {
+                                String v = String.valueOf(b.get(k));
+                                sb.append(k).append('=').append(v.length() > 120 ? v.substring(0, 120) : v).append(" ; ");
+                            }
+                        }
+                        log("H5页面参数：data=" + (in == null ? "" : in.getDataString()) + " extras=[" + sb + "]");
+                    } catch (Throwable t) {
+                    }
+                }
+            });
+            XposedBridge.hookAllMethods(cl.loadClass("cn.ninebot.support.web.WebActivity"), "onResume", new XC_MethodHook() {
+                protected void afterHookedMethod(MethodHookParam p) throws Throwable {
+                    sWebAct = (android.app.Activity) p.thisObject;
+                }
+            });
+            log("OK   WebActivity#onCreate(参数)");
+        } catch (Throwable t) {
+            log("NG   WebActivity#onCreate " + t);
+        }
+    }
+static volatile boolean flowStarted;
+    static volatile boolean ultraArmed;
+
+    private static void startNewFlow() {
+        final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+        for (int i = 0; i < 20; i++) {
+            final int n = i;
+            h.postDelayed(new Runnable() {
+                public void run() {
+                    try {
+                        if (!"1".equals(conf().get("autoShare"))) {
+                            return;
+                        }
+                        if (sTopAct == null) {
+                            return;
+                        }
+                        if (flowStarted) {
+                            return;
+                        }
+                        flowStarted = true;
+                        log("自动分享：新流程启动");
+                        openPostDirect(sTopAct);
+                    } catch (Throwable t) {
+                    }
+                }
+            }, i * 700);
+        }
+    }
+
+    private static void openPostDirect(android.content.Context ctx) {
+        try {
+            String pid = conf().get("postId");
+            if (pid == null || pid.length() < 3) {
+                pid = "22716571";
+            }
+            android.content.Intent in = new android.content.Intent();
+            in.setClassName(ctx.getPackageName(), "cn.ninebot.react.NBReactActivity");
+            in.putExtra("module_name", "TimelineModule");
+            in.putExtra("from_rn", "TimelineModule");
+            in.putExtra("prePgId", "mts");
+            in.putExtra("page_location", "2");
+            in.putExtra("route", "MomentDetail");
+            in.putExtra("circle_id", pid);
+            in.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(in);
+            log("自动分享：直接打开帖子 circle_id=" + pid);
+        } catch (Throwable t) {
+            log("自动分享：打开帖子失败 " + t);
+        }
+    }
+private static int copyTree(java.io.File src, java.io.File dst) throws java.io.IOException {
+        java.io.File[] fs = src.listFiles();
+        int n = 0;
+        if (fs == null) {
+            return 0;
+        }
+        for (java.io.File c : fs) {
+            String p = c.getAbsolutePath();
+            if (p.indexOf("/res/") >= 0) {
+                continue;
+            }
+            java.io.File out = new java.io.File(dst, c.getName());
+            if (c.isDirectory()) {
+                out.mkdirs();
+                n += copyTree(c, out);
+                continue;
+            }
+            if (c.length() > 30L * 1024 * 1024) {
+                continue;
+            }
+            java.io.FileInputStream in = new java.io.FileInputStream(c);
+            java.io.FileOutputStream o = new java.io.FileOutputStream(out);
+            byte[] buf = new byte[65536];
+            int r;
+            while ((r = in.read(buf)) > 0) {
+                o.write(buf, 0, r);
+            }
+            in.close();
+            o.close();
+            n++;
+        }
+        return n;
+    }
+    private static final java.util.Set<String> dbSeen = new java.util.HashSet<String>();
+private static volatile android.app.Activity sTopAct;
+
+    private void hookAutoShare(final XC_LoadPackage.LoadPackageParam lp) {
+        try {
+            XposedHelpers.findAndHookMethod("android.app.Activity", lp.classLoader, "onResume", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    try {
+                        sTopAct = (android.app.Activity) p.thisObject;
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            note("OK   Activity#onResume（自动分享定位）");
+        } catch (Throwable t) {
+            note("FAIL Activity#onResume（自动分享定位） -> " + t);
+        }
+        { if (true) { startNewFlow(); return; } }
+        try {
+            final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+            h.postDelayed(new Runnable() {
+                public void run() {
+                    try {
+                        if (!"1".equals(conf().get("autoShare"))) {
+                            return;
+                        }
+                        android.app.Activity a = sTopAct;
+                        if (a == null) {
+                            log("自动分享：没有前台 Activity，跳过");
+                            return;
+                        }
+                        log("自动分享：开始，点底部「发现」");
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                tapStep(347, 2506, "发现");
+                            }
+                        }, 1000);
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                tapStep(322, 1096, "帖子");
+                            }
+                        }, 8000);
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                tapStep(737, 2452, "分享");
+                            }
+                        }, 16000);
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                tapStep(456, 1877, "微信");
+                            }
+                        }, 20000);
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                backToNinebot();
+                            }
+                        }, 22000);
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                backToNinebot();
+                            }
+                        }, 27000);
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                tapStep(1050, 2520, "我的");
+                            }
+                        }, 32000);
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                tapStep(625, 1927, "任务中心");
+                            }
+                        }, 36000);
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                tapStep(514, 808, "成长任务");
+                            }
+                        }, 47000);
+                    } catch (Throwable t) {
+                        log("自动分享失败：" + t);
+                    }
+                }
+            }, 7000);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void backToNinebot() {
+        try {
+            android.content.Context ctx = null;
+            try {
+                ctx = (android.content.Context) XposedHelpers.callStaticMethod(
+                        XposedHelpers.findClass("android.app.AndroidAppHelper", null),
+                        "currentApplication");
+            } catch (Throwable ignored) {
+            }
+            if (ctx == null) {
+                android.app.Activity a0 = sTopAct;
+                ctx = a0;
+            }
+            if (ctx == null) {
+                log("自动分享：拉回九号失败（拿不到 Context）");
+                return;
+            }
+            android.content.Intent i = ctx.getPackageManager()
+                    .getLaunchIntentForPackage("cn.ninebot.ninebot");
+            if (i == null) {
+                log("自动分享：拉回九号失败（launch intent 为空）");
+                return;
+            }
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                    | android.content.Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            ctx.startActivity(i);
+            log("自动分享：已把九号拉回前台");
+        } catch (Throwable t) {
+            log("自动分享：拉回九号失败 " + t);
+        }
+    }
+
+    private static void tapStep(final int x, final int y, final String tag) {
+        try {
+            final android.app.Activity a = sTopAct;
+            if (a == null) {
+                log("自动分享：点" + tag + " 时没有前台 Activity");
+                return;
+            }
+            final android.view.View dv = a.getWindow().getDecorView();
+            long t = android.os.SystemClock.uptimeMillis();
+            final android.view.MotionEvent d = android.view.MotionEvent.obtain(t, t,
+                    android.view.MotionEvent.ACTION_DOWN, x, y, 0);
+            final android.view.MotionEvent u = android.view.MotionEvent.obtain(t, t + 90,
+                    android.view.MotionEvent.ACTION_UP, x, y, 0);
+            d.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+            u.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+            boolean ok = dv.dispatchTouchEvent(d);
+            dv.postDelayed(new Runnable() {
+                public void run() {
+                    dv.dispatchTouchEvent(u);
+                }
+            }, 90);
+            log("自动分享：点" + tag + " (" + x + "," + y + ") => " + ok);
+        } catch (Throwable t) {
+            log("自动分享：点" + tag + " 失败 " + t);
+        }
+    }
+
+    static volatile String sUid, sDeviceId, sClientVer, sPlatformVer, sRegionx, sLoginCountry;
+
+    static String hdr(Object req, String name) {
+        try {
+            Object hdrs = XposedHelpers.callMethod(req, "headers");
+            Object v = XposedHelpers.callMethod(hdrs, "get", name);
+            return v == null ? null : String.valueOf(v);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    static String nz(String s, String d) {
+        return s == null || s.isEmpty() ? d : s;
+    }
+
+    static byte[] readAllStream(java.io.InputStream is) throws java.io.IOException {
+        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = is.read(buf)) > 0) {
+            bo.write(buf, 0, n);
+        }
+        is.close();
+        return bo.toByteArray();
+    }
+static String diagPost(String url, String body, String ctype) {
+        try {
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            c.setRequestMethod("POST");
+            c.setRequestProperty("Platform", "Android");
+            c.setRequestProperty("Platform-Ver", nz(sPlatformVer, "16"));
+            c.setRequestProperty("Client-Ver", nz(sClientVer, "610114116"));
+            c.setRequestProperty("Service-Time", String.valueOf(System.currentTimeMillis()));
+            c.setRequestProperty("Language", "zh");
+            c.setRequestProperty("Sys-Language", "zh-cn");
+            c.setRequestProperty("Request-Id", java.util.UUID.randomUUID().toString().replace("-", ""));
+            c.setRequestProperty("Business-Type", "1");
+            c.setRequestProperty("Regionx", nz(sRegionx, "bj"));
+            c.setRequestProperty("Login-Country", nz(sLoginCountry, "CN"));
+            c.setRequestProperty("Uid", nz(sUid, ""));
+            c.setRequestProperty("Device-Id", nz(sDeviceId, ""));
+            c.setRequestProperty("Content-Type", ctype);
+            c.setRequestProperty("Accept", "application/json");
+            byte[] b = body.getBytes("UTF-8");
+            c.setDoOutput(true);
+            c.setFixedLengthStreamingMode(b.length);
+            java.io.OutputStream os = c.getOutputStream();
+            os.write(b);
+            os.flush();
+            os.close();
+            int code = c.getResponseCode();
+            java.io.InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            String r = is == null ? "" : new String(readAllStream(is), "UTF-8");
+            return code + " " + (r.length() > 500 ? r.substring(0, 500) : r);
+        } catch (Throwable t) {
+            return "ERR " + t;
         }
     }
 
     static void note(String s) {
         hookLog.add(s);
     }
-
     static void log(String msg) {
         String line = TAG + msg;
         try {

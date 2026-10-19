@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ninebotsign.lsp"
-    android:versionCode="210"
-    android:versionName="2.1">
+    android:versionCode="220"
+    android:versionName="2.2">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
 
@@ -16,6 +16,13 @@
          内容提供者被包可见性挡（Unknown authority），XSharedPreferences 在模块重装后读不到，
          两条一断，九号进程里的开关就永远是「关」，用户看到的就是「开了没效果」。 -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!-- Android 11+ 的包可见性：不声明的话 getLaunchIntentForPackage("cn.ninebot.ninebot")
+         一律返回 null，「打开仪表盘」按钮就拉不起九号
+         （真机实测日志：设置界面：拉起九号失败：没找到桌面入口）。 -->
+    <queries>
+        <package android:name="cn.ninebot.ninebot" />
+    </queries>
 
     <application
         android:label="九号自动签到"
@@ -47,7 +54,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="九号出行自动签到：打开 app 时在进程内捕获 token/deviceId，之后直接调用签到接口完成每日签到" />
+            android:value="九号出行增强：打开 app 时在进程内捕获 token/deviceId 完成每日自动签到；跳过仪表资源签名校验并能自动投递自定义 *.nb 页面文件（仪表盘、设置页等）；设置界面上的「显示开关」决定九号出行自己的设置页里要不要多出「关闭」档（能量回收强度）和「氮气加速」项" />
         <meta-data
             android:name="xposedminversion"
             android:value="82" />

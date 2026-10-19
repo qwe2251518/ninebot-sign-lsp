@@ -18,7 +18,13 @@ public class ConfProvider extends ContentProvider {
     public static final String VEHICLE_SEGMENT = "vehicle";
 
     private static final String[] KEYS = {
-            "vehicleImage", "vehicleImagePath", "vehicleImageStamp", "fakeExpiry"};
+            "vehicleImage", "vehicleImagePath", "vehicleImageStamp", "dashFix",
+
+            "showEnergyOff", "showNitro",
+
+            "fakeExpiry",
+
+            "openDash", "autoShare", "fakeShare", "postId"};
 
     public boolean onCreate() {
         return true;

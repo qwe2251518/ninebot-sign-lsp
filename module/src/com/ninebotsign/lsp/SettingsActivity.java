@@ -24,8 +24,6 @@ import android.view.ViewGroup;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.RadioButton;
-import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -58,13 +56,27 @@ public class SettingsActivity extends Activity {
     private static final int RED_TINT = 0x1FE64340;
     private static final int RED = 0xFFE64340;
 
-    private static final String VER = "2.1";
+    private static final String VER = "2.2";
 
     private static final String REPO = "https://github.com/qwe2251518/ninebot-sign-lsp";
 
     private static final String HOME = "https://www.coolapk.com/u/3345275";
 
-    private Switch signOn, vehOn, expiryOn;
+    private Switch signOn, vehOn;
+
+    private Switch dashOn;
+
+    private Switch energyOn;
+
+    private Switch nitroOn;
+
+    private Switch fakeExpiryOn;
+    private Switch autoShareSw;
+    private Switch fakeShareSw;
+    private android.widget.EditText postIdIn;
+
+    private boolean energyTouched = false;
+    private boolean nitroTouched = false;
     private EditText vehPath;
     private TextView vehStatus;
     private TextView confStatus;
@@ -104,6 +116,8 @@ public class SettingsActivity extends Activity {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
         c.setBackground(round(CARD, 18));
+
+        c.setPadding(0, 0, 0, dp(10));
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         p.leftMargin = dp(16);
@@ -339,16 +353,105 @@ public class SettingsActivity extends Activity {
         c3.addView(confStatus);
         c3.addView(note("改完不用强停九号：注入进程每秒复查一次配置。"));
 
-        LinearLayout cText = section(root, "界面文字");
-        expiryOn = mkSwitch();
-        expiryOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+        LinearLayout dashC = section(root, "仪表");
+        dashOn = mkSwitch();
+        dashOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             public void onCheckedChanged(CompoundButton v, boolean checked) {
                 if (!loading) {
                     save(true);
                 }
             }
         });
-        cText.addView(row(Glyph.INFO, "有效期显示为 9999", null, expiryOn));
+        dashC.addView(row(Glyph.INFO, "修复仪表不显示时速",
+                "跳过九号对页面资源的签名校验，并把自定义页面文件（*.nb：仪表盘、设置页等）按同名自动塞进九号目录", dashOn));
+
+        dashC.addView(note("页面文件按明文投递（模块同时按掉九号的解密这一步）：不再挑机型，"
+                + "别人的成品密文才会让页面空白 / 报「配置文件加载失败」。"));
+        dashC.addView(divider());
+
+        TextView dashOpen = mkButton("打开仪表盘（在手机上）", TINT, ACCENT, true);
+        dashOpen.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                openDashboardOnce();
+            }
+        });
+        dashC.addView(dashOpen);
+
+        LinearLayout pageC = section(root, "九号出行页面（显示开关）");
+        pageC.addView(note("开启「修复仪表不显示时速」开关后生效"));
+        energyOn = mkSwitch();
+        energyOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(CompoundButton v, boolean checked) {
+                if (!loading) {
+                    energyTouched = true;
+                    save(true);
+                }
+            }
+        });
+        pageC.addView(row(Glyph.INFO, "显示「关闭」档",
+                "开＝九号 App 的「能量回收强度」里多一档「关闭」（官方只有 标准/弱），"
+                        + "在那里点「关闭」才是真下发命令；关＝恢复官方那两项。",
+                energyOn));
+
+        pageC.addView(divider());
+        nitroOn = mkSwitch();
+        nitroOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(CompoundButton v, boolean checked) {
+                if (!loading) {
+                    nitroTouched = true;
+                    save(true);
+                }
+            }
+        });
+        pageC.addView(row(Glyph.INFO, "显示「氮气加速」",
+                "开＝九号 App 设置页的列表里多一项「氮气加速」开关（点它由九号自己下发 setGearNitroSpeed）；"
+                        + "关＝那一项不显示，恢复官方页面。",
+                nitroOn));
+
+        LinearLayout expC = section(root, "界面文字");
+        fakeExpiryOn = mkSwitch();
+        fakeExpiryOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(CompoundButton v, boolean checked) {
+                if (!loading) {
+                    save(true);
+                }
+            }
+        });
+        expC.addView(row(Glyph.INFO, "有效期显示为 9999.12.31",
+                "只看样子：九号里「服务有效期：2027.02.22」这类文字，整串日期统一显示成 9999.12.31；"
+                        + "不改任何真实数据，也不影响能不能用。",
+                fakeExpiryOn));
+
+        LinearLayout nC = section(root, "自动领 N币");
+        autoShareSw = mkSwitch();
+        autoShareSw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(CompoundButton v, boolean checked) {
+                if (!loading) {
+                    save(true);
+                }
+            }
+        });
+        nC.addView(row(Glyph.INFO, "自动分享并领取", "打开九号后自己走一遍「分享到微信」并领取当天的 N 币；微信不会真的弹出来。", autoShareSw));
+        fakeShareSw = mkSwitch();
+        fakeShareSw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(CompoundButton v, boolean checked) {
+                if (!loading) {
+                    save(true);
+                }
+            }
+        });
+        nC.addView(row(Glyph.INFO, "伪造分享（不打开微信）", "点分享后直接算成功，不拉起微信、也不会真的发出去。", fakeShareSw));
+        postIdIn = new android.widget.EditText(this);
+        postIdIn.setHint("自定义帖子 ID（默认 22716571）");
+        postIdIn.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        postIdIn.setOnFocusChangeListener(new android.view.View.OnFocusChangeListener() {
+            public void onFocusChange(android.view.View v, boolean hasFocus) {
+                if (!hasFocus && !loading) {
+                    save(true);
+                }
+            }
+        });
+        nC.addView(postIdIn, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         LinearLayout c4 = section(root, "关于");
         c4.addView(row(Glyph.INFO, "项目主页", REPO, null));
@@ -419,7 +522,32 @@ public class SettingsActivity extends Activity {
         signOn.setChecked(!"0".equals(p.getString("signEnabled", "1")));
         vehOn.setChecked("1".equals(p.getString("vehicleImage", "0")));
         vehPath.setText(p.getString("vehicleImagePath", "vehicle.png"));
-        expiryOn.setChecked("1".equals(p.getString("fakeExpiry", "0")));
+
+        if (dashOn != null) {
+            dashOn.setChecked("1".equals(p.getString("dashFix", "0")));
+        }
+
+        if (energyOn != null) {
+            energyOn.setChecked("1".equals(p.getString("showEnergyOff", "0")));
+        }
+        energyTouched = false;
+        if (nitroOn != null) {
+            nitroOn.setChecked("1".equals(p.getString("showNitro", "0")));
+        }
+        nitroTouched = false;
+
+        if (autoShareSw != null) {
+            autoShareSw.setChecked("1".equals(p.getString("autoShare", "0")));
+        }
+        if (fakeShareSw != null) {
+            fakeShareSw.setChecked("1".equals(p.getString("fakeShare", "0")));
+        }
+        if (postIdIn != null) {
+            postIdIn.setText(p.getString("postId", "22716571"));
+        }
+        if (fakeExpiryOn != null) {
+            fakeExpiryOn.setChecked("1".equals(p.getString("fakeExpiry", "0")));
+        }
         loading = false;
         updateVehStatus();
     }
@@ -494,8 +622,76 @@ public class SettingsActivity extends Activity {
         m.put("vehicleImagePath", or(vehPath.getText().toString().trim(), "vehicle.png"));
 
         m.put("vehicleImageStamp", sp().getString("vehicleImageStamp", ""));
-        m.put("fakeExpiry", expiryOn.isChecked() ? "1" : "0");
+
+        String se = sp().getString("showEnergyOff", "");
+        if (energyTouched && energyOn != null) {
+            se = energyOn.isChecked() ? "1" : "0";
+        }
+        if (se != null && se.length() > 0) {
+            m.put("showEnergyOff", se);
+        }
+        String sn = sp().getString("showNitro", "");
+        if (nitroTouched && nitroOn != null) {
+            sn = nitroOn.isChecked() ? "1" : "0";
+        }
+        if (sn != null && sn.length() > 0) {
+            m.put("showNitro", sn);
+        }
+
+        String nVal = sp().getString("vnitro", "");
+        m.put("vnitro", nVal == null ? "" : nVal);
+
+        m.put("dashFix", dashOn != null && dashOn.isChecked() ? "1" : "0");
+
+        m.put("autoShare", autoShareSw != null && autoShareSw.isChecked() ? "1" : "0");
+        m.put("fakeShare", fakeShareSw != null && fakeShareSw.isChecked() ? "1" : "0");
+        m.put("postId", postIdIn != null && postIdIn.getText().toString().trim().length() > 0 ? postIdIn.getText().toString().trim() : "22716571");
+        m.put("fakeExpiry", fakeExpiryOn != null && fakeExpiryOn.isChecked() ? "1" : "0");
+
+        String req = sp().getString("openDash", "");
+        if (req != null && req.length() > 0) {
+            boolean fresh = false;
+            try {
+                long age = System.currentTimeMillis() - Long.parseLong(req);
+                fresh = age >= 0L && age < 60000L;
+            } catch (Throwable t) {
+                fresh = false;
+            }
+            if (fresh) {
+                m.put("openDash", req);
+            } else {
+                sp().edit().remove("openDash").commit();
+            }
+        }
         return m;
+    }
+
+    private void openDashboardOnce() {
+
+        try {
+            sp().edit().putString("openDash", String.valueOf(System.currentTimeMillis())).commit();
+        } catch (Throwable t) {
+            Log.w("NinebotSign", "写「打开仪表盘」请求失败: " + t);
+        }
+        save(true);
+        launchNinebot();
+        toast("已发送：正在把九号拉到前台，几秒内自动打开仪表盘");
+    }
+
+    private void launchNinebot() {
+        try {
+            Intent it = getPackageManager().getLaunchIntentForPackage("cn.ninebot.ninebot");
+            if (it == null) {
+
+                it = new Intent(Intent.ACTION_MAIN);
+                it.setClassName("cn.ninebot.ninebot", "cn.ninebot.ninebot.mainshell.SplashActivity");
+            }
+            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(it);
+            Log.i("NinebotSign", "已把九号拉到前台: " + it.getComponent());
+        } catch (Throwable t) {
+            Log.w("NinebotSign", "拉起九号失败: " + t);
+        }
     }
 
     private void pushConfAsync() {
