@@ -56,7 +56,7 @@ public class SettingsActivity extends Activity {
     private static final int RED_TINT = 0x1FE64340;
     private static final int RED = 0xFFE64340;
 
-    private static final String VER = "2.2";
+    private static final String VER = "2.3";
 
     private static final String REPO = "https://github.com/qwe2251518/ninebot-sign-lsp";
 
@@ -353,61 +353,6 @@ public class SettingsActivity extends Activity {
         c3.addView(confStatus);
         c3.addView(note("改完不用强停九号：注入进程每秒复查一次配置。"));
 
-        LinearLayout dashC = section(root, "仪表");
-        dashOn = mkSwitch();
-        dashOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            public void onCheckedChanged(CompoundButton v, boolean checked) {
-                if (!loading) {
-                    save(true);
-                }
-            }
-        });
-        dashC.addView(row(Glyph.INFO, "修复仪表不显示时速",
-                "跳过九号对页面资源的签名校验，并把自定义页面文件（*.nb：仪表盘、设置页等）按同名自动塞进九号目录", dashOn));
-
-        dashC.addView(note("页面文件按明文投递（模块同时按掉九号的解密这一步）：不再挑机型，"
-                + "别人的成品密文才会让页面空白 / 报「配置文件加载失败」。"));
-        dashC.addView(divider());
-
-        TextView dashOpen = mkButton("打开仪表盘（在手机上）", TINT, ACCENT, true);
-        dashOpen.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                openDashboardOnce();
-            }
-        });
-        dashC.addView(dashOpen);
-
-        LinearLayout pageC = section(root, "九号出行页面（显示开关）");
-        pageC.addView(note("开启「修复仪表不显示时速」开关后生效"));
-        energyOn = mkSwitch();
-        energyOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            public void onCheckedChanged(CompoundButton v, boolean checked) {
-                if (!loading) {
-                    energyTouched = true;
-                    save(true);
-                }
-            }
-        });
-        pageC.addView(row(Glyph.INFO, "显示「关闭」档",
-                "开＝九号 App 的「能量回收强度」里多一档「关闭」（官方只有 标准/弱），"
-                        + "在那里点「关闭」才是真下发命令；关＝恢复官方那两项。",
-                energyOn));
-
-        pageC.addView(divider());
-        nitroOn = mkSwitch();
-        nitroOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            public void onCheckedChanged(CompoundButton v, boolean checked) {
-                if (!loading) {
-                    nitroTouched = true;
-                    save(true);
-                }
-            }
-        });
-        pageC.addView(row(Glyph.INFO, "显示「氮气加速」",
-                "开＝九号 App 设置页的列表里多一项「氮气加速」开关（点它由九号自己下发 setGearNitroSpeed）；"
-                        + "关＝那一项不显示，恢复官方页面。",
-                nitroOn));
-
         LinearLayout expC = section(root, "界面文字");
         fakeExpiryOn = mkSwitch();
         fakeExpiryOn.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
@@ -628,20 +573,17 @@ public class SettingsActivity extends Activity {
             se = energyOn.isChecked() ? "1" : "0";
         }
         if (se != null && se.length() > 0) {
-            m.put("showEnergyOff", se);
         }
         String sn = sp().getString("showNitro", "");
         if (nitroTouched && nitroOn != null) {
             sn = nitroOn.isChecked() ? "1" : "0";
         }
         if (sn != null && sn.length() > 0) {
-            m.put("showNitro", sn);
         }
 
         String nVal = sp().getString("vnitro", "");
         m.put("vnitro", nVal == null ? "" : nVal);
 
-        m.put("dashFix", dashOn != null && dashOn.isChecked() ? "1" : "0");
 
         m.put("autoShare", autoShareSw != null && autoShareSw.isChecked() ? "1" : "0");
         m.put("fakeShare", fakeShareSw != null && fakeShareSw.isChecked() ? "1" : "0");
@@ -658,7 +600,6 @@ public class SettingsActivity extends Activity {
                 fresh = false;
             }
             if (fresh) {
-                m.put("openDash", req);
             } else {
                 sp().edit().remove("openDash").commit();
             }

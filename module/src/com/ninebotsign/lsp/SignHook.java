@@ -112,22 +112,17 @@ public class SignHook implements IXposedHookLoadPackage {
 
         hookApplicationContext(lp);
         hookLifecycle(lp);
-        hookImageDiag(lp);
         hookVehicleCmds(lp);
-        hookConfigDump(lp);
-        hookDashboardSign(lp);
         hookWebDiag(lp);
         hookConsoleDiag(lp);
         hookFakeShare(lp.classLoader);
         hookAutoShareFlow(lp.classLoader);
-        hookWebIntent(lp.classLoader);
         hookFakeExpiry(lp);
         hookAutoShare(lp);
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
             public void run() {
             }
         }, 12000);
-        startDashboardWatch();
 
         hook(lp, "cn.ninebot.commonlibs.nbnet.BodyParametersProvider", "setDeviceId",
                 new Arg0Saver(new Sink() {

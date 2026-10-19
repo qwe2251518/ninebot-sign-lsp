@@ -37,21 +37,14 @@ public final class ConfText {
 
         String so = nz(m.get("showEnergyOff"));
         if (so.length() > 0) {
-            sb.append("showEnergyOff=").append(on(so) ? "1" : "0").append('\n');
         }
         String sn = nz(m.get("showNitro"));
         if (sn.length() > 0) {
-            sb.append("showNitro=").append(on(sn) ? "1" : "0").append('\n');
         }
 
-        sb.append("dashFix=").append(on(m.get("dashFix")) ? "1" : "0").append('\n');
 
         sb.append("fakeExpiry=").append(on(m.get("fakeExpiry")) ? "1" : "0").append('\n');
 
-        String od = nz(m.get("openDash"));
-        if (od.length() > 0) {
-            sb.append("openDash=").append(od).append('\n');
-        }
         sb.append("autoShare=").append(on(m.get("autoShare")) ? "1" : "0").append('\n');
         sb.append("fakeShare=").append(on(m.get("fakeShare")) ? "1" : "0").append('\n');
         String pid0 = m.get("postId");
