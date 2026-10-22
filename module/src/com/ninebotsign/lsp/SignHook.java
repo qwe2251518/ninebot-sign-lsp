@@ -1313,8 +1313,10 @@ public class SignHook implements IXposedHookLoadPackage {
             }
             String cn0 = v.getClass().getSimpleName();
             boolean sc0 = cn0 != null && (cn0.contains("ScrollView") || cn0.contains("RecyclerView"));
-            boolean gate1 = sc0 ? (w >= dm.widthPixels * 0.9f && h >= dm.heightPixels * 0.5f)
-                    : (w >= dm.widthPixels * 0.95f && h >= dm.heightPixels * 0.95f);
+            if (sc0) {
+                return;
+            }
+            boolean gate1 = w >= dm.widthPixels * 0.9f && h >= dm.heightPixels * 1.2f;
             if (!gate1) {
                 try {
                     android.view.ViewParent par1 = v.getParent();

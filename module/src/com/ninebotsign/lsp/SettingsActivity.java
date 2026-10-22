@@ -177,17 +177,52 @@ public class SettingsActivity extends Activity {
     private TextView bgStatus;
 
     private Switch mkSwitch() {
-        Switch s = new Switch(this);
-        s.setShowText(false);
-        ColorStateList track = new ColorStateList(
-                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
-                new int[]{ACCENT, 0xFFDFE0E4});
-        ColorStateList thumb = new ColorStateList(
-                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
-                new int[]{0xFFFFFFFF, 0xFFFFFFFF});
-        s.setTrackTintList(track);
-        s.setThumbTintList(thumb);
+        Switch s = new MiuiSwitch(this);
         return s;
+    }
+
+    static final class MiuiSwitch extends Switch {
+        MiuiSwitch(android.content.Context c) {
+            super(c);
+            setShowText(false);
+            setBackground(null);
+        }
+
+        private int dpx(float v) {
+            return Math.round(v * getResources().getDisplayMetrics().density);
+        }
+
+        @Override
+        public void onMeasure(int w, int h) {
+            super.onMeasure(w, h);
+            setMeasuredDimension(dpx(46), dpx(27));
+        }
+
+        @Override
+        public void setChecked(boolean b) {
+            super.setChecked(b);
+            invalidate();
+        }
+
+        @Override
+        protected void drawableStateChanged() {
+            super.drawableStateChanged();
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas c) {
+            android.graphics.Paint pt = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            float w = getWidth();
+            float h = getHeight();
+            float r = h / 2f;
+            pt.setColor(isChecked() ? 0xFF3482FF : 0xFFDFE0E4);
+            c.drawRoundRect(new android.graphics.RectF(0, 0, w, h), r, r, pt);
+            float d = h - dpx(3);
+            float cx = isChecked() ? (w - dpx(1.5f) - d / 2f) : (dpx(1.5f) + d / 2f);
+            pt.setColor(0xFFFFFFFF);
+            c.drawCircle(cx, h / 2f, d / 2f, pt);
+        }
     }
 
     private LinearLayout row(int glyph, String title, String sub, View control) {
