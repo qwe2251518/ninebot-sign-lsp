@@ -1234,6 +1234,109 @@ public class SignHook implements IXposedHookLoadPackage {
             } catch (Throwable t) {
                 log("背景图：Activity.onResume 钩子失败 " + t);
             }
+            try {
+                XposedHelpers.findAndHookMethod(android.app.Instrumentation.class, "callActivityOnResume",
+                        android.app.Activity.class, new XC_MethodHook() {
+                            protected void afterHookedMethod(MethodHookParam p) {
+                                try {
+                                    final android.app.Activity act = (android.app.Activity) p.args[0];
+                                    if (act == null || !bgImgEnabled()) {
+                                        return;
+                                    }
+                                    final android.view.View dv = act.getWindow().getDecorView();
+                                    final long[] ds = new long[]{2000L, 5000L, 9000L};
+                                    for (int di = 0; di < ds.length; di++) {
+                                        final long dd = ds[di];
+                                        dv.postDelayed(new Runnable() {
+                                            public void run() {
+                                                try {
+                                                    log("背景图：触发 walk " + act.getClass().getSimpleName() + " en=" + bgImgEnabled());
+                                                    walkBg(dv);
+                                                } catch (Throwable t) {
+                                                    log("背景图：walk 异常 " + t);
+                                                }
+                                            }
+                                        }, dd);
+                                    }
+                                } catch (Throwable t) {
+                                }
+                            }
+                        });
+                log("OK   背景图 Instrumentation 钩子已装");
+            } catch (Throwable t) {
+                log("背景图：Instrumentation 钩子失败 " + t);
+            }
+            try {
+                Class<?> vri = Class.forName("android.view.ViewRootImpl");
+                XposedBridge.hookAllMethods(vri, "setView", new XC_MethodHook() {
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            if (!bgImgEnabled()) {
+                                return;
+                            }
+                            Object o = p.args[0];
+                            if (!(o instanceof android.view.View)) {
+                                return;
+                            }
+                            final android.view.View dv = (android.view.View) o;
+                            final long[] ds = new long[]{1500L, 4000L, 8000L};
+                            for (int i = 0; i < ds.length; i++) {
+                                final long dd = ds[i];
+                                dv.postDelayed(new Runnable() {
+                                    public void run() {
+                                        try {
+                                            log("背景图：ViewRoot 触发 " + dv.getClass().getSimpleName() + " en=" + bgImgEnabled());
+                                            walkBg(dv);
+                                        } catch (Throwable t) {
+                                            log("背景图：ViewRoot walk 异常 " + t);
+                                        }
+                                    }
+                                }, dd);
+                            }
+                        } catch (Throwable t) {
+                        }
+                    }
+                });
+                log("OK   背景图 ViewRootImpl 钩子已装");
+            } catch (Throwable t) {
+                log("背景图：ViewRootImpl 钩子失败 " + t);
+            }
+            try {
+                Class<?> at = Class.forName("android.app.ActivityThread");
+                XposedBridge.hookAllMethods(at, "performResumeActivity", new XC_MethodHook() {
+                    protected void afterHookedMethod(MethodHookParam p) {
+                        try {
+                            Object r = p.getResult();
+                            if (!(r instanceof android.app.Activity)) {
+                                return;
+                            }
+                            final android.app.Activity act = (android.app.Activity) r;
+                            final android.view.View dv = act.getWindow() == null ? null : act.getWindow().getDecorView();
+                            if (dv == null) {
+                                return;
+                            }
+                            final long[] ds = new long[]{1200L, 3500L, 7000L};
+                            for (int i = 0; i < ds.length; i++) {
+                                final long dd = ds[i];
+                                dv.postDelayed(new Runnable() {
+                                    public void run() {
+                                        try {
+                                            log("背景图：ActivityThread 触发 " + act.getClass().getSimpleName() + " en=" + bgImgEnabled());
+                                            walkBg(dv);
+                                        } catch (Throwable t) {
+                                            log("背景图：AT walk 异常 " + t);
+                                        }
+                                    }
+                                }, dd);
+                            }
+                        } catch (Throwable t) {
+                        }
+                    }
+                });
+                log("OK   背景图 ActivityThread 钩子已装");
+            } catch (Throwable t) {
+                log("背景图：ActivityThread 钩子失败 " + t);
+            }
             log("OK   背景图钩子已装");
         } catch (Throwable t) {
             log("背景图钩子失败 " + t);
@@ -1316,7 +1419,7 @@ public class SignHook implements IXposedHookLoadPackage {
             if (sc0) {
                 return;
             }
-            boolean gate1 = w >= dm.widthPixels * 0.9f && h >= dm.heightPixels * 1.2f;
+            boolean gate1 = w >= dm.widthPixels * 0.9f && h >= dm.heightPixels * 0.5f;
             if (!gate1) {
                 try {
                     android.view.ViewParent par1 = v.getParent();

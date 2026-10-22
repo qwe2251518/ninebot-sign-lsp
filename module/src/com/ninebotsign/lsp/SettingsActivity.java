@@ -225,6 +225,15 @@ public class SettingsActivity extends Activity {
         }
     }
 
+    private android.view.View noteRow(String text) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextColor(SUB);
+        t.setTextSize(13);
+        t.setPadding(dp(4), dp(12), dp(4), dp(2));
+        return t;
+    }
+
     private LinearLayout row(int glyph, String title, String sub, View control) {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
@@ -401,7 +410,7 @@ public class SettingsActivity extends Activity {
                 save(true);
             }
         });
-        c2.addView(row(Glyph.IMAGE, "替换主页背景图", "仅支持 root；图会被推到九号自己的目录", bgOn));
+        c2.addView(row(Glyph.IMAGE, "替换主页背景图（测试版）", "仅支持 root；图会被推到九号自己的目录。测试版：效果可能不稳", bgOn));
         c2.addView(divider());
         TextView bgPick = mkButton("从相册选择背景图", TINT, ACCENT, true);
         bgPick.setOnClickListener(new View.OnClickListener() {
@@ -453,7 +462,7 @@ public class SettingsActivity extends Activity {
                         + "不改任何真实数据，也不影响能不能用。",
                 fakeExpiryOn));
 
-        LinearLayout nC = section(root, "自动领 N币");
+        LinearLayout nC = c1;
         autoShareSw = mkSwitch();
         autoShareSw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             public void onCheckedChanged(CompoundButton v, boolean checked) {
@@ -462,6 +471,7 @@ public class SettingsActivity extends Activity {
                 }
             }
         });
+        nC.addView(noteRow("自动领 N币"));
         nC.addView(row(Glyph.INFO, "自动分享并领取", "打开九号后自己走一遍「分享到微信」并领取当天的 N 币；微信不会真的弹出来。", autoShareSw));
         fakeShareSw = mkSwitch();
         fakeShareSw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
@@ -514,7 +524,7 @@ public class SettingsActivity extends Activity {
         autoCheckOn.setChecked(acv);
         autoCheckOn.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
             public void onCheckedChanged(android.widget.CompoundButton b, boolean c) {
-                sp().edit().putBoolean("autoCheck", c).commit();
+                sp().edit().putString("autoCheck", c ? "1" : "0").commit();
                 save(true);
             }
         });
