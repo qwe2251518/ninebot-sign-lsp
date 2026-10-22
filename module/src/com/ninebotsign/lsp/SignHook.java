@@ -122,6 +122,7 @@ public class SignHook implements IXposedHookLoadPackage {
         hookFakeExpiry(lp);
         hookAutoShare(lp);
         hookRnIntent(lp.classLoader);
+        autoCheckNewVersion();
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
             public void run() {
             }
@@ -1095,6 +1096,14 @@ public class SignHook implements IXposedHookLoadPackage {
 
     static android.graphics.Bitmap bgBitmap() {
         try {
+            String cp0 = conf().get("bgImagePath");
+            if (cp0 != null && cp0.length() > 0 && !cp0.equals(bgPath)) {
+                bgPath = cp0;
+                bgBmp = null;
+            }
+        } catch (Throwable t) {
+        }
+        try {
             if (bgBmp != null) {
                 return bgBmp;
             }
@@ -1302,7 +1311,10 @@ public class SignHook implements IXposedHookLoadPackage {
                 }
             } catch (Throwable t) {
             }
-            boolean gate1 = h >= dm.heightPixels * 0.95f && w >= dm.widthPixels * 0.95f;
+            String cn0 = v.getClass().getSimpleName();
+            boolean sc0 = cn0 != null && (cn0.contains("ScrollView") || cn0.contains("RecyclerView"));
+            boolean gate1 = sc0 ? (w >= dm.widthPixels * 0.9f && h >= dm.heightPixels * 0.5f)
+                    : (w >= dm.widthPixels * 0.95f && h >= dm.heightPixels * 0.95f);
             if (!gate1) {
                 try {
                     android.view.ViewParent par1 = v.getParent();
@@ -1803,7 +1815,7 @@ public class SignHook implements IXposedHookLoadPackage {
             }
             String[] keys = {"signEnabled", "vehicleImage", "vehicleImagePath",
                     "dashFix", "openDash", "autoShare", "fakeShare", "postId",
-                    "showEnergyOff", "showNitro"};
+                    "showEnergyOff", "showNitro", "bgImage", "bgImagePath", "autoCheck"};
             Map<String, String> m = new java.util.LinkedHashMap<String, String>();
             for (int i = 0; i < keys.length; i++) {
                 String v = p.getString(keys[i], "");
@@ -4518,6 +4530,82 @@ static String diagPost(String url, String body, String ctype) {
             fos.close();
         } catch (Throwable t) {
         }
+    }
+
+    static final String MOD_VER = "3.0";
+
+    static void autoCheckNewVersion() {
+        try {
+            if (!ConfText.on(conf().get("autoCheck"))) {
+                return;
+            }
+        } catch (Throwable t) {
+            return;
+        }
+        new Thread(new Runnable() {
+            public void run() {
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(
+                            "https://api.github.com/repos/qwe2251518/ninebot-sign-lsp/releases/latest").openConnection();
+                    c.setConnectTimeout(6000);
+                    c.setReadTimeout(6000);
+                    c.setRequestProperty("Accept", "application/vnd.github+json");
+                    c.setRequestProperty("User-Agent", "ninebot-sign-lsp");
+                    int code = c.getResponseCode();
+                    if (code != 200) {
+                        c.disconnect();
+                        return;
+                    }
+                    java.io.InputStream in = c.getInputStream();
+                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                    byte[] bf = new byte[4096];
+                    int n;
+                    while ((n = in.read(bf)) > 0) {
+                        bo.write(bf, 0, n);
+                    }
+                    in.close();
+                    c.disconnect();
+                    String js = new String(bo.toByteArray(), "UTF-8");
+                    String tag = null;
+                    int i = js.indexOf("\"tag_name\"");
+                    if (i > 0) {
+                        int q1 = js.indexOf('"', js.indexOf(':', i) + 1);
+                        int q2 = js.indexOf('"', q1 + 1);
+                        if (q1 > 0 && q2 > q1) {
+                            tag = js.substring(q1 + 1, q2).replace("v", "").trim();
+                        }
+                    }
+                    if (tag == null) {
+                        return;
+                    }
+                    if (verNewer(tag, MOD_VER)) {
+                        log("自动更新检测：发现新版本 " + tag + "（当前 " + MOD_VER + "）");
+                        toast("九号模块有新版本 " + tag + "，去 GitHub 下载");
+                    } else {
+                        log("自动更新检测：已是最新（" + MOD_VER + "）");
+                    }
+                } catch (Throwable t) {
+                    log("自动更新检测失败：" + t);
+                }
+            }
+        }).start();
+    }
+
+    static boolean verNewer(String a, String b) {
+        try {
+            String[] x = a.split("\\.");
+            String[] y = b.split("\\.");
+            int L = Math.max(x.length, y.length);
+            for (int i = 0; i < L; i++) {
+                int xi = i < x.length ? Integer.parseInt(x[i].replaceAll("[^0-9]", "")) : 0;
+                int yi = i < y.length ? Integer.parseInt(y[i].replaceAll("[^0-9]", "")) : 0;
+                if (xi != yi) {
+                    return xi > yi;
+                }
+            }
+        } catch (Throwable t) {
+        }
+        return false;
     }
 
     static void toast(final String msg) {

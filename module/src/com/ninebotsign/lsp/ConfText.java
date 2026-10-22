@@ -37,6 +37,13 @@ public final class ConfText {
 
         sb.append("fakeExpiry=").append(on(m.get("fakeExpiry")) ? "1" : "0").append('\n');
 
+        sb.append("bgImage=").append(on(m.get("bgImage")) ? "1" : "0").append('\n');
+        String bgp1 = nz(m.get("bgImagePath"));
+        if (bgp1.length() > 0) {
+            sb.append("bgImagePath=").append(bgp1).append('\n');
+        }
+        sb.append("autoCheck=").append(on(m.get("autoCheck")) ? "1" : "0").append('\n');
+
         sb.append("autoShare=").append(on(m.get("autoShare")) ? "1" : "0").append('\n');
         sb.append("fakeShare=").append(on(m.get("fakeShare")) ? "1" : "0").append('\n');
         String pid0 = m.get("postId");

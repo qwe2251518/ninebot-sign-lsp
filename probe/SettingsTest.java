@@ -137,7 +137,7 @@ public class SettingsTest {
         check("关掉车图时写 vehicleImage=0", parse(t1).get("vehicleimage").equals("0"), null);
         check("车图关时不写 vehicleImagePath", !t1.contains("vehicleImagePath"), null);
         check("文本以换行结尾、没有 CR", t1.endsWith("\n") && !t1.contains("\r"), null);
-        check("没有多余空行", countLines(t1) == 7, "lines=" + countLines(t1));
+        check("没有多余空行", countLines(t1) == 9, "lines=" + countLines(t1));
 
         // ------------------------------------------------------------------
         say("");
@@ -172,7 +172,7 @@ public class SettingsTest {
         Map<String, String> p5 = parse(t5);
         check("路径首尾空格被去掉、里头的换行被拍掉",
                 "/sdcard/ab.png".equals(p5.get("vehicleimagepath")), p5.get("vehicleimagepath"));
-        check("行数没有因为注入的换行变多", countLines(t5) == 8, "lines=" + countLines(t5));
+        check("行数没有因为注入的换行变多", countLines(t5) == 10, "lines=" + countLines(t5));
 
         // ------------------------------------------------------------------
         say("");

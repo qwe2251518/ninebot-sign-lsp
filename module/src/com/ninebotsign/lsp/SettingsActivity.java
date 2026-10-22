@@ -56,7 +56,7 @@ public class SettingsActivity extends Activity {
     private static final int RED_TINT = 0x1FE64340;
     private static final int RED = 0xFFE64340;
 
-    private static final String VER = "2.6";
+    private static final String VER = "3.0";
 
     private static final String REPO = "https://github.com/qwe2251518/ninebot-sign-lsp";
 
@@ -72,6 +72,7 @@ public class SettingsActivity extends Activity {
 
     private Switch fakeExpiryOn;
     private Switch bgOn;
+    private Switch autoCheckOn;
     private Switch autoShareSw;
     private Switch fakeShareSw;
     private android.widget.EditText postIdIn;
@@ -365,6 +366,20 @@ public class SettingsActivity extends Activity {
                 save(true);
             }
         });
+        c2.addView(row(Glyph.IMAGE, "替换主页背景图", "仅支持 root；图会被推到九号自己的目录", bgOn));
+        c2.addView(divider());
+        TextView bgPick = mkButton("从相册选择背景图", TINT, ACCENT, true);
+        bgPick.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                pickBg();
+            }
+        });
+        LinearLayout.LayoutParams bpp = (LinearLayout.LayoutParams) bgPick.getLayoutParams();
+        bpp.topMargin = dp(12);
+        bpp.bottomMargin = dp(2);
+        c2.addView(bgPick);
+        bgStatus = note("");
+        c2.addView(bgStatus);
         vehStatus = note("");
         c2.addView(vehStatus);
         vehPath = field("手工指定图片路径（一般不用填）");
@@ -451,6 +466,24 @@ public class SettingsActivity extends Activity {
             }
         });
         c4.addView(me);
+        autoCheckOn = mkSwitch();
+        boolean acv = false;
+        try {
+            acv = sp().getBoolean("autoCheck", false);
+        } catch (Throwable t) {
+            try {
+                acv = "1".equals(sp().getString("autoCheck", ""));
+            } catch (Throwable t2) {
+            }
+        }
+        autoCheckOn.setChecked(acv);
+        autoCheckOn.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean c) {
+                sp().edit().putBoolean("autoCheck", c).commit();
+                save(true);
+            }
+        });
+        c4.addView(row(Glyph.INFO, "自动检测新版本", "每次打开九号时查一次 GitHub，有新版本就提一下", autoCheckOn));
         final TextView updNote = note("\u5f53\u524d\u7248\u672c " + VER);
         c4.addView(updNote);
         final TextView updBtn = mkButton("\u68c0\u6d4b\u66f4\u65b0", TINT, ACCENT, false);
@@ -731,6 +764,7 @@ public class SettingsActivity extends Activity {
 
         m.put("vehicleImageStamp", sp().getString("vehicleImageStamp", ""));
         String bgp = sp().getString("bgImagePath", "");
+        m.put("bgImage", (bgOn != null && bgOn.isChecked()) ? "1" : "0");
         m.put("bgImagePath", bgp);
 
         String se = sp().getString("showEnergyOff", "");

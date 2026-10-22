@@ -1,15 +1,15 @@
 九号自动签到 —— 设置界面 → ninebot-sign.conf 离线验证
 
 -- 1. 都关（默认） --
-# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=0\nfakeExpiry=0\nautoShare=0\nfakeShare=0\npostId=22716571\n
+# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=0\nfakeExpiry=0\nbgImage=0\nautoCheck=0\nautoShare=0\nfakeShare=0\npostId=22716571\n
   [PASS] 第一行是 '#' 表头   (# 由「九号自动签到」设置界面生成；想手动改配置)
   [PASS] 关掉车图时写 vehicleImage=0
   [PASS] 车图关时不写 vehicleImagePath
   [PASS] 文本以换行结尾、没有 CR
-  [PASS] 没有多余空行   (lines=7)
+  [PASS] 没有多余空行   (lines=9)
 
 -- 2. 车图开（含自定义路径） --
-# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=1\nvehicleImagePath=/sdcard/Pictures/car.png\nfakeExpiry=0\nautoShare=0\nfakeShare=0\npostId=22716571\n
+# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=1\nvehicleImagePath=/sdcard/Pictures/car.png\nfakeExpiry=0\nbgImage=0\nautoCheck=0\nautoShare=0\nfakeShare=0\npostId=22716571\n
   [PASS] 车图开写成 vehicleImage=1   (1)
   [PASS] 自定义图片路径写入   (/sdcard/Pictures/car.png)
   [PASS] 键名全是小写比较能命中（配置读回时按小写匹配）
@@ -19,9 +19,9 @@
   [PASS] vehicleImage=1 仍在
 
 -- 5. 值里的换行 / 首尾空格 --
-# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=1\nvehicleImagePath=/sdcard/ab.png\nfakeExpiry=0\nautoShare=0\nfakeShare=0\npostId=22716571\n
+# 由「九号自动签到」设置界面生成；想手动改配置就先删掉这一行\nsignEnabled=1\nvehicleImage=1\nvehicleImagePath=/sdcard/ab.png\nfakeExpiry=0\nbgImage=0\nautoCheck=0\nautoShare=0\nfakeShare=0\npostId=22716571\n
   [PASS] 路径首尾空格被去掉、里头的换行被拍掉   (/sdcard/ab.png)
-  [PASS] 行数没有因为注入的换行变多   (lines=8)
+  [PASS] 行数没有因为注入的换行变多   (lines=10)
 
 -- 6. uiOn / uiNz 的真值判断 --
   [PASS] uiOn("1")
@@ -43,6 +43,8 @@
 signEnabled=0
 vehicleImage=0
 fakeExpiry=0
+bgImage=0
+autoCheck=0
 autoShare=0
 fakeShare=0
 postId=22716571
@@ -81,6 +83,8 @@ signEnabled=1
 vehicleImage=1
 vehicleImageStamp=12345-1700000000
 fakeExpiry=0
+bgImage=0
+autoCheck=0
 autoShare=0
 fakeShare=0
 postId=22716571
