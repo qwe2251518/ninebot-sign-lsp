@@ -108,7 +108,11 @@ public class SignHook implements IXposedHookLoadPackage {
             return;
         }
         isMainProcess = PKG.equals(lp.processName) || lp.processName == null;
-        log("注入成功 process=" + lp.processName);
+        log("注入成功 process=" + lp.processName + " lpLoader=" + lp.classLoader);
+
+        LP_CL = lp.classLoader;
+        hookLoaderProbe();
+        startLoaderWatch();
 
         hookApplicationContext(lp);
         hookLifecycle(lp);
@@ -117,6 +121,9 @@ public class SignHook implements IXposedHookLoadPackage {
         hookVehicleCmds(lp);
         hookWebDiag(lp);
         hookConsoleDiag(lp);
+        hookWebIntent(lp.classLoader);
+        hookDialogs();
+        hookActivityDiag();
         hookFakeShare(lp.classLoader);
         hookAutoShareFlow(lp.classLoader);
         hookFakeExpiry(lp);
@@ -222,6 +229,19 @@ public class SignHook implements IXposedHookLoadPackage {
                                     deviceId = (String) d;
                                     log("捕获 deviceId(请求头)=" + deviceId);
                                 }
+                            }
+                            try {
+                                if (apiProbeOn()) {
+                                    Object url = XposedHelpers.callMethod(req, "url");
+                                    String us = url == null ? "" : String.valueOf(url);
+                                    if (us.indexOf("ninebot") >= 0 && apiLogged.size() < 200) {
+                                        String m = String.valueOf(XposedHelpers.callMethod(req, "method"));
+                                        if (apiLogged.add(m + " " + us.split("\\?")[0])) {
+                                            log("API " + m + " " + clip(us, 300));
+                                        }
+                                    }
+                                }
+                            } catch (Throwable ignored) {
                             }
                         } catch (Throwable t) {
                         }
@@ -377,6 +397,12 @@ public class SignHook implements IXposedHookLoadPackage {
                         protected void afterHookedMethod(MethodHookParam p) {
                             try {
                                 appCtx = (Application) p.args[0];
+                            } catch (Throwable t) {
+                            }
+                            try {
+                                if (appCtx != null && appCtx.getClass().getClassLoader() != null) {
+                                    onHostLoader(appCtx.getClass().getClassLoader(), false);
+                                }
                             } catch (Throwable t) {
                             }
                             appStarted = true;
@@ -802,6 +828,65 @@ public class SignHook implements IXposedHookLoadPackage {
         return out;
     }
 
+    static volatile String h5Cookie;
+
+    static String cookieFor(String url) {
+        try {
+            String c = android.webkit.CookieManager.getInstance().getCookie(url);
+            return c;
+        } catch (Throwable t) {
+            log("读 Cookie 失败 " + t);
+            return null;
+        }
+    }
+
+    static Resp httpH5(String method, String urlStr, String body, String auth) {
+        Resp out = new Resp();
+        HttpURLConnection c = null;
+        try {
+            URL u = new URL(urlStr);
+            c = (HttpURLConnection) u.openConnection();
+            c.setRequestMethod(method);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(15000);
+            c.setRequestProperty("Accept", "application/json, text/plain, */*");
+            c.setRequestProperty("language", "zh");
+            c.setRequestProperty("sys_language", "zh-CN");
+            c.setRequestProperty("platform", "h5");
+            if (auth != null) {
+                c.setRequestProperty("Authorization", auth);
+            }
+            if (h5Cookie != null && h5Cookie.length() > 0) {
+                c.setRequestProperty("Cookie", h5Cookie);
+            }
+            if (body != null) {
+                c.setRequestProperty("Content-Type", "application/json");
+                c.setDoOutput(true);
+                byte[] b = body.getBytes("UTF-8");
+                c.setFixedLengthStreamingMode(b.length);
+                OutputStream os = c.getOutputStream();
+                os.write(b);
+                os.flush();
+                os.close();
+            }
+            out.httpCode = c.getResponseCode();
+            InputStream is = (out.httpCode >= 200 && out.httpCode < 400)
+                    ? c.getInputStream() : c.getErrorStream();
+            out.body = is == null ? "" : readAll(is);
+        } catch (Throwable t) {
+            out.httpCode = -1;
+            out.body = "EXC " + t;
+        } finally {
+            if (c != null) {
+                try {
+                    c.disconnect();
+                } catch (Throwable ignore) {
+                }
+            }
+        }
+        return out;
+    }
+
     static String readAll(InputStream is) throws Exception {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         byte[] buf = new byte[4096];
@@ -849,6 +934,9 @@ public class SignHook implements IXposedHookLoadPackage {
         }
         if (body.indexOf("response.system.error") >= 0) {
             return "凭据被服务器拒绝（token 无效或不是这个接口认的格式）";
+        }
+        if (respCode(body) == 43003 || body.indexOf("task_unreaches") >= 0) {
+            return "任务未达条件或今天已领过（正常）";
         }
         return "未知签名，把原文发我";
     }
@@ -970,9 +1058,21 @@ public class SignHook implements IXposedHookLoadPackage {
     }
 
     private void hookImageDiag(final XC_LoadPackage.LoadPackageParam lp) {
+        if (tryLoad("com.bumptech.glide.RequestBuilder") == null) {
+            defer("imageDiagGlide", new Runnable() {
+                public void run() {
+                    hookGlideVehicleImg();
+                }
+            });
+        } else {
+            hookGlideVehicleImg();
+        }
+        hookImageDiagRest(lp);
+    }
 
+    private void hookGlideVehicleImg() {
         try {
-            Class<?> rb = XposedHelpers.findClass("com.bumptech.glide.RequestBuilder", lp.classLoader);
+            Class<?> rb = mustLoad("com.bumptech.glide.RequestBuilder");
             XposedBridge.hookAllMethods(rb, "load", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam p) {
@@ -1014,13 +1114,16 @@ public class SignHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             log("ImageDiag: hook Glide 失败 " + t);
         }
+    }
+
+    private void hookImageDiagRest(final XC_LoadPackage.LoadPackageParam lp) {
 
         String[] drawee = new String[]{
                 "com.facebook.drawee.view.SimpleDraweeView",
                 "com.facebook.drawee.view.DraweeView"};
         for (final String cls : drawee) {
             try {
-                Class<?> c = XposedHelpers.findClass(cls, lp.classLoader);
+                Class<?> c = mustLoad(cls);
                 XposedBridge.hookAllMethods(c, "setImageURI", new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam p) {
@@ -1035,8 +1138,8 @@ public class SignHook implements IXposedHookLoadPackage {
         }
 
         try {
-            Class<?> rv = XposedHelpers.findClass(
-                    "com.facebook.react.views.image.ReactImageView", lp.classLoader);
+            Class<?> rv = mustLoad(
+                    "com.facebook.react.views.image.ReactImageView");
             XposedBridge.hookAllMethods(rv, "setSource", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam p) {
@@ -1250,7 +1353,9 @@ public class SignHook implements IXposedHookLoadPackage {
                                         dv.postDelayed(new Runnable() {
                                             public void run() {
                                                 try {
-                                                    log("背景图：触发 walk " + act.getClass().getSimpleName() + " en=" + bgImgEnabled());
+                                                    if (apiProbeOn()) {
+                                                        log("背景图：触发 walk " + act.getClass().getSimpleName() + " en=" + bgImgEnabled());
+                                                    }
                                                     walkBg(dv);
                                                 } catch (Throwable t) {
                                                     log("背景图：walk 异常 " + t);
@@ -1446,7 +1551,9 @@ public class SignHook implements IXposedHookLoadPackage {
             v.setTag("bgCustom");
             bgHits++;
             v.setBackgroundDrawable(new BgDrawable(b));
-            log("背景图：已给容器上背景 view=" + w + "x" + h);
+            if (apiProbeOn()) {
+                log("背景图：已给容器上背景 view=" + w + "x" + h);
+            }
         } catch (Throwable t) {
         }
     }
@@ -1461,7 +1568,9 @@ public class SignHook implements IXposedHookLoadPackage {
             }
             bgHits = 0;
             int seen = walkBg1(root, 0);
-            log("\u80cc\u666f\u56fe\uff1awalk \u5b8c\u6210 \u8282\u70b9=" + seen + " \u66ff\u6362=" + bgHits);
+            if (bgHits > 0 || apiProbeOn()) {
+                log("\u80cc\u666f\u56fe\uff1awalk \u5b8c\u6210 \u8282\u70b9=" + seen + " \u66ff\u6362=" + bgHits);
+            }
         } catch (Throwable t) {
         }
     }
@@ -1580,7 +1689,8 @@ public class SignHook implements IXposedHookLoadPackage {
             if (!key.equals(vehSrcPath)) {
                 vehSrcPath = key;
                 log("车辆图配置：开关=" + (on ? "开" : "关")
-                        + "  用图=" + (src == null ? "(没有)" : src));
+                        + "  用图=" + (src == null ? "(没有)" : src)
+                        + (apiProbeOn() ? ("  " + confDiag()) : ""));
             }
             vehImgOn = on;
             vehImgPath = src;
@@ -1723,6 +1833,45 @@ public class SignHook implements IXposedHookLoadPackage {
         is.close();
     }
 
+    static boolean apiProbeOn() {
+        return confOn("apiLog", false);
+    }
+
+    static String confDiag() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            File d = dataDir();
+            sb.append("dir=").append(d);
+            if (d != null) {
+                File f = new File(d, "ninebot-sign.conf");
+                sb.append(" exists=").append(f.exists()).append(" canRead=").append(f.canRead())
+                        .append(" len=").append(f.length());
+                String[] list = d.list();
+                sb.append(" files=").append(list == null ? -1 : list.length);
+            }
+        } catch (Throwable t) {
+            sb.append(" dirEXC=").append(t);
+        }
+        try {
+            sb.append(" keys=").append(conf().keySet());
+        } catch (Throwable t) {
+            sb.append(" confEXC=").append(t);
+        }
+        try {
+            Map<String, String> u = uiPrefs();
+            sb.append(" prefs=").append(u == null ? "null" : (u.size() + ":" + u.get("vehicleImage")));
+        } catch (Throwable t) {
+            sb.append(" prefsEXC=").append(t);
+        }
+        try {
+            String p = providerConfText();
+            sb.append(" prov=").append(p == null ? "null" : ("len" + p.length()));
+        } catch (Throwable t) {
+            sb.append(" provEXC=").append(t);
+        }
+        return sb.toString();
+    }
+
     static File dataDir() {
         Context c = appCtx;
         if (c == null) {
@@ -1741,6 +1890,15 @@ public class SignHook implements IXposedHookLoadPackage {
     static void img(String src, Object value, Object view) {
         if (seenImages.size() >= IMG_LOG_MAX) {
             return;
+        }
+        try {
+            if (!apiProbeOn()) {
+                return;
+            }
+            if (!vehImgEnabled() && !bgImgEnabled()) {
+                return;
+            }
+        } catch (Throwable ignored) {
         }
         String v = describeImg(value);
         String vd = viewName(view);
@@ -2145,10 +2303,275 @@ public class SignHook implements IXposedHookLoadPackage {
         return def;
     }
 
+    // ===== 宿主 ClassLoader 探测（6.6.8 起是网易易盾 NIS 壳，真代码在独立 loader 里） =====
+
+    static volatile ClassLoader LP_CL;
+    static volatile ClassLoader hostLoader;
+    static volatile boolean probeLogOnce = false;
+
+    static final java.util.LinkedHashMap<String, java.util.List<Object[]>> pendingHooks
+            = new java.util.LinkedHashMap<String, java.util.List<Object[]>>();
+    static final java.util.LinkedHashMap<String, Runnable> deferredInstallers
+            = new java.util.LinkedHashMap<String, Runnable>();
+
+    /** 依次用宿主 loader / lp loader / 系统 loader 找类，找不到返回 null（不抛）。 */
+    static Class<?> tryLoad(String cls) {
+        ClassLoader[] cands = new ClassLoader[] { hostLoader, LP_CL };
+        for (int i = 0; i < cands.length; i++) {
+            ClassLoader c = cands[i];
+            if (c == null) {
+                continue;
+            }
+            try {
+                Class<?> k = Class.forName(cls, false, c);
+                if (k != null) {
+                    return k;
+                }
+            } catch (Throwable t) {
+            }
+        }
+        try {
+            ClassLoader sys = ClassLoader.getSystemClassLoader();
+            if (sys != null) {
+                return Class.forName(cls, false, sys);
+            }
+        } catch (Throwable t) {
+        }
+        return null;
+    }
+
+    static Class<?> mustLoad(String cls) throws ClassNotFoundException {
+        Class<?> c = tryLoad(cls);
+        if (c == null) {
+            throw new ClassNotFoundException(cls + "（等宿主 ClassLoader）");
+        }
+        return c;
+    }
+
+    static boolean canHost(ClassLoader cl) {
+        if (cl == null) {
+            return false;
+        }
+        String[] probe = new String[] {
+                "cn.ninebot.commonlibs.nbnet.NbHttpClient",
+                "cn.ninebot.lib.passport.account.PassportApiClient",
+                "cn.ninebot.library.bluetooth.dynamic.DynamicConfigManager",
+                "com.google.gson.Gson",
+                "cn.ninebot.react.NBReactActivity",
+                "cn.ninebot.device.DeviceManager"};
+        for (int i = 0; i < probe.length; i++) {
+            try {
+                Class.forName(probe[i], false, cl);
+                return true;
+            } catch (Throwable t) {
+            }
+        }
+        return false;
+    }
+
+    /** trusted=true 表示这个 loader 刚刚成功加载过 cn.ninebot.* 类，直接采信。 */
+    static void onHostLoader(ClassLoader cl, boolean trusted) {
+        if (cl == null) {
+            return;
+        }
+        ClassLoader cur = hostLoader;
+        if (cur == cl) {
+            return;
+        }
+        if (cur != null) {
+            return;
+        }
+        if (!trusted && !canHost(cl)) {
+            if (!probeLogOnce) {
+                probeLogOnce = true;
+                log("候选 ClassLoader 不可用：" + cl.getClass().getName());
+            }
+            return;
+        }
+        hostLoader = cl;
+        hostCl = cl;
+        log("宿主 ClassLoader 已捕获：" + cl.getClass().getName() + " trusted=" + trusted);
+        dropLoaderProbe();
+        flushPendingHooks();
+        runDeferredInstallers();
+    }
+
+    static final java.util.List<XC_MethodHook.Unhook> loaderProbeUnhooks
+            = java.util.Collections.synchronizedList(new java.util.ArrayList<XC_MethodHook.Unhook>());
+
+    static void dropLoaderProbe() {
+        try {
+            synchronized (loaderProbeUnhooks) {
+                for (XC_MethodHook.Unhook u : loaderProbeUnhooks) {
+                    try {
+                        u.unhook();
+                    } catch (Throwable ignored) {
+                    }
+                }
+                loaderProbeUnhooks.clear();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static void defer(String tag, Runnable r) {
+        synchronized (deferredInstallers) {
+            if (!deferredInstallers.containsKey(tag)) {
+                deferredInstallers.put(tag, r);
+                log("延后安装登记：" + tag);
+            }
+        }
+    }
+
+    static void runDeferredInstallers() {
+        java.util.LinkedHashMap<String, Runnable> copy;
+        synchronized (deferredInstallers) {
+            copy = new java.util.LinkedHashMap<String, Runnable>(deferredInstallers);
+            deferredInstallers.clear();
+        }
+        for (java.util.Map.Entry<String, Runnable> e : copy.entrySet()) {
+            try {
+                e.getValue().run();
+                log("延后安装完成：" + e.getKey());
+            } catch (Throwable t) {
+                log("延后安装失败：" + e.getKey() + " -> " + t);
+            }
+        }
+    }
+
+    static void flushPendingHooks() {
+        java.util.LinkedHashMap<String, java.util.List<Object[]>> copy;
+        synchronized (pendingHooks) {
+            copy = new java.util.LinkedHashMap<String, java.util.List<Object[]>>(pendingHooks);
+            pendingHooks.clear();
+        }
+        for (java.util.Map.Entry<String, java.util.List<Object[]>> e : copy.entrySet()) {
+            String cls = e.getKey();
+            Class<?> c = tryLoad(cls);
+            if (c == null) {
+                synchronized (pendingHooks) {
+                    java.util.List<Object[]> keep = pendingHooks.get(cls);
+                    if (keep == null) {
+                        pendingHooks.put(cls, e.getValue());
+                    } else {
+                        keep.addAll(e.getValue());
+                    }
+                }
+                continue;
+            }
+            for (Object[] it : e.getValue()) {
+                String method = (String) it[0];
+                XC_MethodHook cb = (XC_MethodHook) it[1];
+                try {
+                    XposedBridge.hookAllMethods(c, method, cb);
+                    hookLog.add("OK   " + cls + "#" + method + " (延后)");
+                    log("hook 成功(延后) " + cls + "#" + method);
+                } catch (Throwable t) {
+                    hookLog.add("FAIL " + cls + "#" + method + " -> " + t);
+                    log("hook 失败(延后) " + cls + "#" + method + " -> " + t);
+                }
+            }
+        }
+    }
+
+    private void hookLoaderProbe() {
+        try {
+            java.util.Set<XC_MethodHook.Unhook> us
+                    = XposedBridge.hookAllMethods(ClassLoader.class, "loadClass", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    try {
+                        if (hostLoader != null) {
+                            return;
+                        }
+                        Object r = p.getResult();
+                        if (!(r instanceof Class)) {
+                            return;
+                        }
+                        String n = ((Class<?>) r).getName();
+                        if (n == null || !n.startsWith("cn.ninebot.")) {
+                            return;
+                        }
+                        Object self = p.thisObject;
+                        if (self instanceof ClassLoader) {
+                            onHostLoader((ClassLoader) self, true);
+                        }
+                    } catch (Throwable t) {
+                    }
+                }
+            });
+            if (us != null) {
+                synchronized (loaderProbeUnhooks) {
+                    loaderProbeUnhooks.addAll(us);
+                }
+            }
+            note("ClassLoader#loadClass 已挂（宿主 loader 探测）");
+        } catch (Throwable t) {
+            log("hook ClassLoader 失败: " + t);
+        }
+    }
+
+    private void startLoaderWatch() {
+        try {
+            final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+            h.postDelayed(new Runnable() {
+                int n = 0;
+
+                public void run() {
+                    try {
+                        if (hostLoader == null) {
+                            java.util.LinkedHashSet<ClassLoader> cands
+                                    = new java.util.LinkedHashSet<ClassLoader>();
+                            if (LP_CL != null) {
+                                cands.add(LP_CL);
+                            }
+                            try {
+                                if (appCtx != null && appCtx.getClass().getClassLoader() != null) {
+                                    cands.add(appCtx.getClass().getClassLoader());
+                                }
+                            } catch (Throwable t) {
+                            }
+                            for (ClassLoader c : cands) {
+                                if (c != null && canHost(c)) {
+                                    onHostLoader(c, false);
+                                    break;
+                                }
+                            }
+                        }
+                        if (hostLoader != null) {
+                            flushPendingHooks();
+                            runDeferredInstallers();
+                        }
+                    } catch (Throwable t) {
+                    }
+                    n++;
+                    if (n < 150 && hostLoader == null) {
+                        h.postDelayed(this, 400);
+                    }
+                }
+            }, 400);
+        } catch (Throwable t) {
+            log("loader watch 启动失败: " + t);
+        }
+    }
+
     static void hook(XC_LoadPackage.LoadPackageParam lp, String cls, String method,
                      XC_MethodHook cb) {
+        Class<?> c = tryLoad(cls);
+        if (c == null) {
+            synchronized (pendingHooks) {
+                java.util.List<Object[]> l = pendingHooks.get(cls);
+                if (l == null) {
+                    l = new java.util.ArrayList<Object[]>();
+                    pendingHooks.put(cls, l);
+                }
+                l.add(new Object[] { method, cb });
+            }
+            hookLog.add("WAIT " + cls + "#" + method);
+            log("hook 待装 " + cls + "#" + method + "（类不在当前 loader，等宿主 loader）");
+            return;
+        }
         try {
-            Class<?> c = XposedHelpers.findClass(cls, lp.classLoader);
             XposedBridge.hookAllMethods(c, method, cb);
             hookLog.add("OK   " + cls + "#" + method);
             log("hook 成功 " + cls + "#" + method);
@@ -2298,7 +2721,9 @@ public class SignHook implements IXposedHookLoadPackage {
     static final int CMD_LOG_MAX = 600;
 
     private void hookVehicleCmds(final XC_LoadPackage.LoadPackageParam lp) {
-        hostCl = lp.classLoader;
+        if (hostCl == null) {
+            hostCl = lp.classLoader;
+        }
 
         hook(lp, "cn.ninebot.library.bluetooth.dynamic.DynamicCommandFactory", "getCommandConfig",
                 new XC_MethodHook() {
@@ -2648,7 +3073,11 @@ static boolean protoLogged = false;
     static ClassLoader hostCl;
 
     static Class<?> hostClass(String name) throws ClassNotFoundException {
-        ClassLoader cl = hostCl;
+        Class<?> c = tryLoad(name);
+        if (c != null) {
+            return c;
+        }
+        ClassLoader cl = hostLoader != null ? hostLoader : hostCl;
         if (cl == null) {
             throw new ClassNotFoundException(name + "（宿主 ClassLoader 还没拿到）");
         }
@@ -2843,8 +3272,17 @@ static boolean protoLogged = false;
     }
 
     private void hookDashboardSign(final XC_LoadPackage.LoadPackageParam lp) {
+        final Class<?> c0 = tryLoad(DCM);
+        if (c0 == null) {
+            defer("dashboardSign", new Runnable() {
+                public void run() {
+                    hookDashboardSign(lp);
+                }
+            });
+            return;
+        }
         try {
-            final Class<?> c = XposedHelpers.findClass(DCM, lp.classLoader);
+            final Class<?> c = c0;
 
             XposedBridge.hookAllConstructors(c, new XC_MethodHook() {
                 @Override
@@ -2895,8 +3333,7 @@ static boolean protoLogged = false;
             log("仪表修复：已挂钩 " + DCM + "（mCheckSign / getMCheckSign / checkSign）");
 
             try {
-                Class<?> ci = XposedHelpers.findClass(
-                        "cn.ninebot.device.dynamic.ConfigInterfaceImpl", lp.classLoader);
+                Class<?> ci = mustLoad("cn.ninebot.device.dynamic.ConfigInterfaceImpl");
                 XposedBridge.hookAllMethods(ci, "checkSign", new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam p) {
@@ -2915,8 +3352,7 @@ static boolean protoLogged = false;
             }
 
             try {
-                Class<?> eu = XposedHelpers.findClass(
-                        "cn.ninebot.tools.util.EncryptionUtils", lp.classLoader);
+                Class<?> eu = mustLoad("cn.ninebot.tools.util.EncryptionUtils");
                 XposedBridge.hookAllMethods(eu, "rsaCheckSign", new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam p) {
@@ -3597,7 +4033,7 @@ static boolean protoLogged = false;
             Context c = appCtx;
             ClassLoader cl = c == null ? null : c.getClassLoader();
             if (cl != null) {
-                Class<?> dm = cl.loadClass("cn.ninebot.device.DeviceManager");
+                Class<?> dm = mustLoad("cn.ninebot.device.DeviceManager");
                 bean = staticField(dm, "currentDeviceBean");
                 if (bean == null) {
                     Object list = staticField(dm, "mAuthDeviceList");
@@ -3939,6 +4375,14 @@ private void hookConsoleDiag(final XC_LoadPackage.LoadPackageParam lp) {
                         protected void afterHookedMethod(MethodHookParam p) {
                             try {
                                 String msg = String.valueOf(p.args[0]);
+                                try {
+                                    int lv = p.args.length > 1 && p.args[1] instanceof Integer ? (Integer) p.args[1] : 4;
+                                    if (lv >= 2 && consoleLogged < 60 && apiProbeOn()) {
+                                        consoleLogged++;
+                                        log("H5 console lv=" + lv + " " + clip(String.valueOf(msg), 400));
+                                    }
+                                } catch (Throwable ignored) {
+                                }
                                 if (msg != null && msg.indexOf("[NBTASK]") >= 0) {
                                     log("H5任务：" + (msg.length() > 3000 ? msg.substring(0, 3000) : msg));
                                 }
@@ -3952,12 +4396,54 @@ private void hookConsoleDiag(final XC_LoadPackage.LoadPackageParam lp) {
         }
     }
 
-    private static final String TASK_JS = "(function(){if(window.__nbt4){return}window.__nbt4=1;setTimeout(function(){try{var es=document.querySelectorAll('div,span');for(var i=0;i<es.length;i++){var t=(es[i].textContent||'').trim();if(t==='\u6210\u957f\u4efb\u52a1'){es[i].click();console.log('[NBTASK] tab');break}}}catch(e){}},1200);var L=function(s){try{console.log('[NBTASK] '+s)}catch(e){}};var H=null,SENT={},N=0;var OX=XMLHttpRequest.prototype.open,OS=XMLHttpRequest.prototype.send,OH=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=String(u||'');this.__h={};return OX.apply(this,arguments)};XMLHttpRequest.prototype.setRequestHeader=function(k,v){try{this.__h[k]=v}catch(e){}return OH.apply(this,arguments)};function claim(id){try{if(SENT[id]){return}SENT[id]=1;var h={};for(var k in H){h[k]=H[k]}h['Content-Type']='application/json';var tok=null;try{tok=sessionStorage.getItem('LOGIN_TOKEN')}catch(e){}if(tok&&!h['Authorization']){h['Authorization']=tok}L('claim id='+id+' auth='+(h['Authorization']?'yes':'no'));fetch('https://cn-cbu-gateway.ninebot.com/portal/self-service/task/reward',{method:'POST',headers:h,body:JSON.stringify({taskId:id})}).then(function(r){return r.text()}).then(function(x){L('claim-res '+String(x).slice(0,300))}).catch(function(e){L('claim-err '+e)})}catch(e){L('claim-throw '+e)}}try{XMLHttpRequest.prototype.send=function(b){var t=this;try{if(t.__u&&t.__u.indexOf('ninebot.com')>=0&&N<25){N++;t.addEventListener('load',function(){try{L('XHR '+t.__m+' '+t.__u.split('?')[0]+(b?' BODY='+String(b).slice(0,200):'')+' RESP='+String(t.responseText||'').slice(0,220))}catch(e){}});if(t.__u.indexOf('task/v3/list')>=0){t.addEventListener('load',function(){try{H=t.__h;var j=JSON.parse(t.responseText);var arr=(j&&j.data)||[];for(var i=0;i<arr.length;i++){var it=arr[i];if(it.title&&String(it.title).indexOf('分享')>=0){claim(it.taskId)}}}catch(e){L('parse-err '+e)}})}}}catch(e){}return OS.apply(this,arguments)}}catch(e){}L('installed4')})();";
+    private static final String TASK_JS_OLD = "(function(){if(window.__nbt4){return}window.__nbt4=1;setTimeout(function(){try{var es=document.querySelectorAll('div,span');for(var i=0;i<es.length;i++){var t=(es[i].textContent||'').trim();if(t==='\u6210\u957f\u4efb\u52a1'){es[i].click();console.log('[NBTASK] tab');break}}}catch(e){}},1200);var L=function(s){try{console.log('[NBTASK] '+s)}catch(e){}};var H=null,SENT={},N=0;var OX=XMLHttpRequest.prototype.open,OS=XMLHttpRequest.prototype.send,OH=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=String(u||'');this.__h={};return OX.apply(this,arguments)};XMLHttpRequest.prototype.setRequestHeader=function(k,v){try{this.__h[k]=v}catch(e){}return OH.apply(this,arguments)};function claim(id){try{if(SENT[id]){return}SENT[id]=1;var h={};for(var k in H){h[k]=H[k]}h['Content-Type']='application/json';var tok=null;try{tok=sessionStorage.getItem('LOGIN_TOKEN')}catch(e){}if(tok&&!h['Authorization']){h['Authorization']=tok}L('claim id='+id+' auth='+(h['Authorization']?'yes':'no'));fetch('https://cn-cbu-gateway.ninebot.com/portal/self-service/task/reward',{method:'POST',headers:h,body:JSON.stringify({taskId:id})}).then(function(r){return r.text()}).then(function(x){L('claim-res '+String(x).slice(0,300))}).catch(function(e){L('claim-err '+e)})}catch(e){L('claim-throw '+e)}}try{XMLHttpRequest.prototype.send=function(b){var t=this;try{if(t.__u&&t.__u.indexOf('ninebot.com')>=0&&N<25){N++;t.addEventListener('load',function(){try{L('XHR '+t.__m+' '+t.__u.split('?')[0]+(b?' BODY='+String(b).slice(0,200):'')+' RESP='+String(t.responseText||'').slice(0,220))}catch(e){}});if(t.__u.indexOf('task/v3/list')>=0){t.addEventListener('load',function(){try{H=t.__h;var j=JSON.parse(t.responseText);var arr=(j&&j.data)||[];for(var i=0;i<arr.length;i++){var it=arr[i];if(it.title&&String(it.title).indexOf('分享')>=0){claim(it.taskId)}}}catch(e){L('parse-err '+e)}})}}}catch(e){}return OS.apply(this,arguments)}}catch(e){}L('installed4')})();";
+
+    static int consoleLogged;
+
+    private static final String TASK_JS = "(function(){if(window.__nbt5){return}window.__nbt5=1;"
+            + "var L=function(s){try{console.log('[NBTASK] '+s)}catch(e){}};"
+            + "var CK={};"
+            + "function nearShare(el){var n=el,d=0;while(n&&d<8){var t=(n.textContent||'');"
+            + "if(t.indexOf('\\u5206\\u4eab')>=0&&t.length<400){return true}n=n.parentElement;d++}return false}"
+            + "function scan(){var W=['\\u9886\\u53d6','\\u53bb\\u9886\\u53d6','\\u7acb\\u5373\\u9886\\u53d6','\\u9886\\u53d6\\u5956\\u52b1'];"
+            + "var es=document.querySelectorAll('div,span,button,a,p');"
+            + "for(var i=0;i<es.length;i++){var t=(es[i].textContent||'').trim();if(t.length>6){continue}"
+            + "var hit=false;for(var w=0;w<W.length;w++){if(t===W[w]){hit=true;break}}if(!hit){continue}"
+            + "if(!nearShare(es[i])){continue}var k=t+i;if(CK[k]){continue}CK[k]=1;"
+            + "try{es[i].click();L('click '+t)}catch(e){L('click-err '+e)}}}"
+            + "try{var ts=document.querySelectorAll('div,span');for(var i=0;i<ts.length;i++){"
+            + "var x=(ts[i].textContent||'').trim();"
+            + "if(x==='\\u6210\\u957f\\u4efb\\u52a1'||x==='\\u65e5\\u5e38\\u4efb\\u52a1'){ts[i].click();L('tab '+x);break}}}catch(e){}"
+            + "var n=0;var iv=setInterval(function(){n++;try{scan()}catch(e){}if(n>30){clearInterval(iv)}},1000);"
+            + "var HD=null,HDRLOGGED=0,SENT={};"
+            + "function claim(id){try{if(SENT[id]){return}SENT[id]=1;var h=HD||{};"
+            + "L('claim id='+id+' hdrs='+Object.keys(h).join(','));"
+            + "var x=new XMLHttpRequest();x.open('POST','https://cn-cbu-gateway.ninebot.com/portal/self-service/task/reward');"
+            + "for(var k in h){try{x.setRequestHeader(k,h[k])}catch(e){}}"
+            + "try{x.setRequestHeader('Content-Type','application/json')}catch(e){}"
+            + "x.onload=function(){L('claim-res '+String(x.responseText||'').slice(0,300))};"
+            + "x.onerror=function(){L('claim-err')};x.send(JSON.stringify({taskId:id}))}catch(e){L('claim-x '+e)}}"
+            + "try{var OX=XMLHttpRequest.prototype.open,OS=XMLHttpRequest.prototype.send,OH=XMLHttpRequest.prototype.setRequestHeader;"
+            + "XMLHttpRequest.prototype.open=function(m,u){this.__m=m;this.__u=String(u||'');this.__h={};return OX.apply(this,arguments)};"
+            + "XMLHttpRequest.prototype.setRequestHeader=function(k,v){try{this.__h[k]=v}catch(e){}return OH.apply(this,arguments)};"
+            + "XMLHttpRequest.prototype.send=function(b){var t=this;"
+            + "if(t.__u&&t.__u.indexOf('ninebot')>=0){"
+            + "if(t.__u.indexOf('task/v3/list')>=0){HD=t.__h||{};"
+            + "if(!HDRLOGGED){HDRLOGGED=1;try{L('HDR '+Object.keys(HD).map(function(k){return k+'='+String(HD[k]).slice(0,40)}).join(' | '))}catch(e){}}}"
+            + "t.addEventListener('load',function(){"
+            + "try{L('XHR '+t.__m+' '+(t.__u.indexOf('task/v3/list')>=0?t.__u.slice(0,300):t.__u.split('?')[0])+(b?' B='+String(b).slice(0,120):'')+' R='+String(t.responseText||'').slice(0,200));"
+            + "if(t.__u.indexOf('task/v3/list')>=0){var j=JSON.parse(t.responseText);var arr=(j&&j.data)||[];"
+            + "for(var i=0;i<arr.length;i++){var it=arr[i];"
+            + "if(it.title&&String(it.title).indexOf('\\u5206\\u4eab')>=0){"
+            + "L('share-task '+it.taskId+' st='+it.taskStatus+'/'+it.status);"
+            + "claim(it.taskId)}}}}catch(e){L('load-err '+e)}})}"
+            + "return OS.apply(this,arguments)}}catch(e){}"
+            + "L('v6 on');})();";
 
     private static void injectTaskH5(final Object webView) {
         try {
             final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
-            final int[] delays = new int[]{250, 600, 1200, 2000};
+            final int[] delays = new int[]{250, 600, 1200, 2500, 4000, 6000};
             for (int i = 0; i < delays.length; i++) {
                 final int d = delays[i];
                 h.postDelayed(new Runnable() {
@@ -4129,8 +4615,19 @@ private static void findDb(java.io.File dir, java.util.List<java.io.File> out, i
             }
         }
     }private static void hookFakeShare(ClassLoader cl) {
+        final Class<?> mm;
         try {
-            XposedBridge.hookAllMethods(cl.loadClass("com.tencent.mm.opensdk.channel.MMessageActV2"), "send", new XC_MethodHook() {
+            mm = mustLoad("com.tencent.mm.opensdk.channel.MMessageActV2");
+        } catch (Throwable t) {
+            defer("fakeShare", new Runnable() {
+                public void run() {
+                    hookFakeShare(null);
+                }
+            });
+            return;
+        }
+        try {
+            XposedBridge.hookAllMethods(mm, "send", new XC_MethodHook() {
                 protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                     try {
                         if (!fakeShareOn()) {
@@ -4146,6 +4643,29 @@ private static void findDb(java.io.File dir, java.util.List<java.io.File> out, i
             log("OK   MMessageActV2#send(伪造分享)");
         } catch (Throwable t) {
             log("NG   MMessageActV2 " + t);
+        }
+        try {
+            Class<?> wx = tryLoad("com.tencent.mm.opensdk.openapi.WXApiImplV10");
+            if (wx == null) {
+                log("提示：没有 WXApiImplV10（微信 SDK 精简版），只靠 MMessageActV2 拦截");
+                return;
+            }
+            XposedBridge.hookAllMethods(wx, "sendReq", new XC_MethodHook() {
+                protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
+                    try {
+                        if (!fakeShareOn()) {
+                            return;
+                        }
+                        p.setResult(Boolean.FALSE);
+                        shareBlocked = true;
+                        log("伪造分享：拦下 WXApiImplV10#sendReq（未发到微信）");
+                    } catch (Throwable t) {
+                    }
+                }
+            });
+            log("OK   WXApiImplV10#sendReq(伪造分享)");
+        } catch (Throwable t) {
+            log("NG   WXApiImplV10 " + t);
         }
     }
 
@@ -4183,35 +4703,191 @@ private static void findDb(java.io.File dir, java.util.List<java.io.File> out, i
 
     private static void hookAutoShareFlow(ClassLoader cl) {
         startNewFlow();
-    }
-    static void openTaskCenter() {
-        try {
-            android.content.Context ctx = (android.content.Context) Class.forName("android.app.AndroidAppHelper").getMethod("currentApplication").invoke(null);
-            if (ctx == null) {
-                log("自动领取：拿不到上下文");
-                return;
-            }
-            String url = "https://h5-bj.ninebot.com/ninebotApp/#/taskCenter?immersed=1&statusbar=light&category=motor&language=zh&app_version=610114116&is_dark=0&androidStatusBarHeight=144";
-            android.content.Intent in = new android.content.Intent();
-            in.setClassName(ctx.getPackageName(), "cn.ninebot.support.web.WebActivity");
-            in.putExtra("web_url", url);
-            in.putExtra("title", "\u4efb\u52a1\u4e2d\u5fc3");
-            in.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
-            ctx.startActivity(in);
-            final android.os.Handler h2 = new android.os.Handler(android.os.Looper.getMainLooper());
-            h2.postDelayed(new Runnable() {
-                public void run() {
-                    log("自动领取：等待脚本自行拉取成长任务");
+        final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+        final int[] n = {0};
+        h.postDelayed(new Runnable() {
+            public void run() {
+                n[0]++;
+                try {
+                    if (claimStarted) {
+                        return;
+                    }
+                    if (autoShareOn() && (token != null || passportToken != null || gwAuthHeader != null)) {
+                        claimStarted = true;
+                        log("自动领取：启动后顺带领一次待领奖励");
+                        claimShareTask();
+                        return;
+                    }
+                } catch (Throwable ignored) {
                 }
-            }, 7000);
-            log("自动领取：已打开任务中心 H5");
-        } catch (Throwable t) {
-            log("自动领取：打开失败 " + t);
+                if (n[0] < 15) {
+                    h.postDelayed(this, 4000);
+                }
+            }
+        }, 6000);
+    }
+
+    static volatile boolean claimStarted = false;
+    static volatile boolean h5FallbackTried;
+    static void openTaskCenter() {
+        Class<?> webCls = tryLoad("cn.ninebot.support.web.WebActivity");
+        if (webCls == null) {
+            log("自动领取：6.6.8 无 WebActivity，跳过 H5，直接原生领奖");
+        } else {
+            try {
+                android.content.Context ctx = appContext();
+                if (ctx == null) {
+                    ctx = sTopAct;
+                }
+                String pkg = "cn.ninebot.ninebot";
+                if (ctx != null && ctx.getPackageName() != null && ctx.getPackageName().length() > 3) {
+                    pkg = ctx.getPackageName();
+                }
+                if (ctx == null) {
+                    log("自动领取：拿不到上下文");
+                } else {
+                    String url = "https://h5-bj.ninebot.com/ninebotApp/#/taskCenter?immersed=1&statusbar=light&category=motor&language=zh&is_dark=0";
+                    android.content.Intent in = new android.content.Intent();
+                    in.setClassName(pkg, "cn.ninebot.support.web.WebActivity");
+                    in.putExtra("web_url", url);
+                    in.putExtra("title", "任务中心");
+                    in.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                    ctx.startActivity(in);
+                    taskCenterOpened = true;
+                    log("自动领取：已打开任务中心 H5 pkg=" + pkg);
+                }
+            } catch (Throwable t) {
+                log("自动领取：打开 H5 失败（不影响原生领奖）" + t);
+            }
+        }
+        final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+        if (!claimStarted) {
+            h.postDelayed(new Runnable() {
+                public void run() {
+                    claimShareTask();
+                }
+            }, 4000);
         }
     }
-    private static void hookWebIntent(ClassLoader cl) {
+    static final String URL_TASK_LIST = GW + "/portal/api/task-center/task/v3/list";
+    static final String URL_TASK_REWARD = GW + "/portal/self-service/task/reward";
+
+    static volatile String appVerCode;
+
+    static String appVersionCode() {
+        if (appVerCode != null && appVerCode.length() > 0) {
+            return appVerCode;
+        }
+        String pkg = "cn.ninebot.ninebot";
         try {
-            XposedBridge.hookAllMethods(cl.loadClass("cn.ninebot.support.web.WebActivity"), "onCreate", new XC_MethodHook() {
+            android.content.Context c = appContext();
+            if (c == null) {
+                c = sTopAct;
+            }
+            if (c != null) {
+                String n = c.getPackageName();
+                if (n != null && n.length() > 3) {
+                    pkg = n;
+                }
+                appVerCode = String.valueOf(c.getPackageManager().getPackageInfo(pkg, 0).versionCode);
+            }
+        } catch (Throwable t) {
+            log("读版本号失败 " + t);
+        }
+        if (appVerCode == null || appVerCode.length() == 0) {
+            appVerCode = "606083576";
+        }
+        return appVerCode;
+    }
+
+    static void claimShareTask() {
+        new Thread(new Runnable() {
+            public void run() {
+                claimShareTaskBody();
+            }
+        }, "nb-claim").start();
+    }
+
+    static void claimShareTaskBody() {
+        try {
+            String auth = firstNonNull(firstNonNull(firstNonNull(token, gwAuthHeader), authHeader), passportToken);
+            if (auth == null || auth.length() < 8) {
+                log("自动领取：没有可用凭据，跳过");
+                return;
+            }
+            String listUrl = URL_TASK_LIST + "?typeCode=2&appVersion=" + appVersionCode() + "&platformType=Android";
+            h5Cookie = cookieFor("https://cn-cbu-gateway.ninebot.com");
+            log("自动领取：Cookie " + (h5Cookie == null || h5Cookie.length() == 0 ? "空" : "有(len=" + h5Cookie.length() + ")"));
+            Resp r = httpH5("GET", listUrl, null, auth);
+            String body = r.body == null ? "" : r.body;
+            log("任务列表 GET(H5头) HTTP " + r.httpCode + " | " + clip(body, 1200));
+            if (respCode(body) != 0 || body.indexOf("taskId") < 0) {
+                Resp r0 = http("GET", listUrl, null, auth);
+                body = r0.body == null ? "" : r0.body;
+                log("任务列表 GET(全头) HTTP " + r0.httpCode + " | " + clip(body, 1200));
+            }
+            java.util.List<String> ids = new java.util.ArrayList<String>();
+            try {
+                JSONObject o = new JSONObject(body);
+                JSONArray arr = o.optJSONArray("data");
+                if (arr == null && o.optJSONObject("data") != null) {
+                    arr = o.optJSONObject("data").optJSONArray("list");
+                }
+                if (arr != null) {
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject it = arr.optJSONObject(i);
+                        if (it == null) {
+                            continue;
+                        }
+                        String id = it.optString("taskId", it.optString("id", ""));
+                        String title = it.optString("title", it.optString("taskName", ""));
+                        String st = it.optString("rewardStatus", it.optString("status", it.optString("completeStatus", "")));
+                        log("  任务[" + i + "] id=" + id + " rewardStatus=" + st + " title=" + title);
+                        if (title.indexOf("分享") >= 0 && id.length() > 0) {
+                            log("  分享任务原文 " + clip(it.toString(), 500));
+                            ids.add(id);
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                log("任务列表解析失败 " + t);
+            }
+            if (ids.isEmpty()) {
+                log("自动领取：原生列表没拿到任务，改用 H5 领取");
+                if (!h5FallbackTried) {
+                    h5FallbackTried = true;
+                    new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+                        public void run() {
+                            openTaskCenter();
+                        }
+                    });
+                }
+                return;
+            }
+            for (int i = 0; i < ids.size() && i < 5; i++) {
+                Resp c = httpH5("POST", URL_TASK_REWARD, "{\"taskId\":\"" + ids.get(i) + "\"}", auth);
+                log("领奖 taskId=" + ids.get(i) + " HTTP " + c.httpCode + " | "
+                        + explain(c.body) + " | " + clip(c.body, 400));
+            }
+        } catch (Throwable t) {
+            log("自动领取异常 " + t);
+        }
+    }
+
+    private static void hookWebIntent(ClassLoader cl) {
+        final Class<?> wa;
+        try {
+            wa = mustLoad("cn.ninebot.support.web.WebActivity");
+        } catch (Throwable t) {
+            defer("webIntent", new Runnable() {
+                public void run() {
+                    hookWebIntent(null);
+                }
+            });
+            return;
+        }
+        try {
+            XposedBridge.hookAllMethods(wa, "onCreate", new XC_MethodHook() {
                 protected void afterHookedMethod(MethodHookParam p) throws Throwable {
                     try {
                         android.app.Activity a = (android.app.Activity) p.thisObject;
@@ -4229,7 +4905,7 @@ private static void findDb(java.io.File dir, java.util.List<java.io.File> out, i
                     }
                 }
             });
-            XposedBridge.hookAllMethods(cl.loadClass("cn.ninebot.support.web.WebActivity"), "onResume", new XC_MethodHook() {
+            XposedBridge.hookAllMethods(wa, "onResume", new XC_MethodHook() {
                 protected void afterHookedMethod(MethodHookParam p) throws Throwable {
                     sWebAct = (android.app.Activity) p.thisObject;
                 }
@@ -4275,8 +4951,19 @@ static volatile boolean flowStarted;
     }
 
     private static void hookRnIntent(ClassLoader cl) {
+        final Class<?> rn;
         try {
-            XposedBridge.hookAllMethods(cl.loadClass("cn.ninebot.react.NBReactActivity"), "onResume", new XC_MethodHook() {
+            rn = mustLoad("cn.ninebot.react.NBReactActivity");
+        } catch (Throwable t) {
+            defer("rnIntent", new Runnable() {
+                public void run() {
+                    hookRnIntent(null);
+                }
+            });
+            return;
+        }
+        try {
+            XposedBridge.hookAllMethods(rn, "onResume", new XC_MethodHook() {
                 protected void afterHookedMethod(MethodHookParam p) throws Throwable {
                     try {
                         android.content.Intent in = ((android.app.Activity) p.thisObject).getIntent();
@@ -4288,11 +4975,8 @@ static volatile boolean flowStarted;
                             return;
                         }
                         ultraArmed = true;
-                        log("自动分享：帖子页就绪，稍后点分享");
-                        final android.os.Handler hu = new android.os.Handler(android.os.Looper.getMainLooper());
-                        hu.postDelayed(new Runnable() { public void run() { tapStep(737, 2452, "分享"); } }, 2300);
-                        hu.postDelayed(new Runnable() { public void run() { tapStep(456, 1877, "微信"); } }, 3300);
-                        hu.postDelayed(new Runnable() { public void run() { try { openTaskCenter(); } catch (Throwable t) {} } }, 4300);
+                        log("自动分享：帖子页就绪，开始找转发按钮");
+                        sharePollStart();
                     } catch (Throwable t) {
                     }
                 }
@@ -4304,32 +4988,25 @@ static volatile boolean flowStarted;
     }
     private static void startNewFlow() {
         final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
-        for (int i = 0; i < 20; i++) {
-            final int n = i;
-            h.postDelayed(new Runnable() {
-                public void run() {
-                    try {
-                        if (!"1".equals(conf().get("autoShare"))) {
-                            return;
-                        }
-                        if (autoShareTodayDone()) {
-                            return;
-                        }
-                        if (sTopAct == null) {
-                            return;
-                        }
-                        if (flowStarted) {
-                            return;
-                        }
+        final int[] n = {0};
+        h.postDelayed(new Runnable() {
+            public void run() {
+                try {
+                    if ("1".equals(conf().get("autoShare")) && !flowStarted
+                            && !autoShareTodayDone() && sTopAct != null) {
                         flowStarted = true;
-                        autoShareMarkToday();
-                        log("自动分享：新流程启动");
+                        log("自动分享：新流程启动（等 " + n[0] + " 秒）");
                         openPostDirect(sTopAct);
-                    } catch (Throwable t) {
+                        return;
                     }
+                } catch (Throwable ignored) {
                 }
-            }, i * 700);
-        }
+                n[0]++;
+                if (n[0] < 120) {
+                    h.postDelayed(this, 1000);
+                }
+            }
+        }, 2000);
     }
 
     private static void openPostDirect(android.content.Context ctx) {
@@ -4531,6 +5208,294 @@ private static volatile android.app.Activity sTopAct;
             log("自动分享：点" + tag + " 失败 " + t);
         }
     }
+
+    static void blurInputs() {
+        try {
+            android.app.Activity a = sTopAct;
+            android.view.View dv = a == null || a.getWindow() == null ? null : a.getWindow().getDecorView();
+            if (dv == null) {
+                return;
+            }
+            java.util.List<android.view.View> hits = new java.util.ArrayList<android.view.View>();
+            collectEdits(dv, hits);
+            for (android.view.View v : hits) {
+                if (!v.isFocused()) {
+                    continue;
+                }
+                v.clearFocus();
+                Object im = v.getContext().getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
+                if (im != null) {
+                    try {
+                        XposedHelpers.callMethod(im, "hideSoftInputFromWindow", v.getWindowToken(), 0);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                log("自动分享：输入框已失焦");
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static void collectEdits(android.view.View v, java.util.List<android.view.View> out) {
+        if (v instanceof android.widget.EditText) {
+            out.add(v);
+            return;
+        }
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                collectEdits(g.getChildAt(i), out);
+            }
+        }
+    }
+
+    static void tapShareIcon() {
+        android.app.Activity a = sTopAct;
+        if (a == null) {
+            log("自动分享：没有前台 Activity，点不了转发");
+            return;
+        }
+        blurInputs();
+        android.view.View dv = a.getWindow() == null ? null : a.getWindow().getDecorView();
+        int w = dv == null ? 0 : dv.getWidth();
+        int h = dv == null ? 0 : dv.getHeight();
+        if (w <= 0 || h <= 0) {
+            tapStep(665, 2455, "分享");
+            return;
+        }
+        tapStep((int) (w * 0.4618f), (int) (h * 0.9590f), "分享");
+    }
+
+    static final java.util.List<android.view.View> dialogRoots =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<android.view.View>());
+    static final java.util.List<android.app.Dialog> dialogObjs =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<android.app.Dialog>());
+
+    private void hookDialogs() {
+        try {
+            XposedBridge.hookAllMethods(android.app.Dialog.class, "show", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    try {
+                        android.app.Dialog d = (android.app.Dialog) p.thisObject;
+                        android.view.Window wd = d.getWindow();
+                        android.view.View dv = wd == null ? null : wd.getDecorView();
+                        if (dv == null) {
+                            return;
+                        }
+                        synchronized (dialogRoots) {
+                            dialogRoots.remove(dv);
+                            dialogRoots.add(dv);
+                            while (dialogRoots.size() > 8) {
+                                dialogRoots.remove(0);
+                            }
+                        }
+                        synchronized (dialogObjs) {
+                            dialogObjs.remove(d);
+                            dialogObjs.add(d);
+                            while (dialogObjs.size() > 8) {
+                                dialogObjs.remove(0);
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            note("OK   Dialog#show（分享面板识别）");
+        } catch (Throwable t) {
+            note("NG   Dialog#show -> " + t);
+        }
+    }
+
+    static final java.util.Set<String> actSeen =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    private void hookActivityDiag() {
+        try {
+            XposedBridge.hookAllMethods(android.app.Activity.class, "onCreate", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    try {
+                        String n = p.thisObject.getClass().getName();
+                        if (n.startsWith("cn.ninebot") && actSeen.add(n)) {
+                            log("页面类名 " + n);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            note("OK   Activity#onCreate（页面类名诊断）");
+        } catch (Throwable t) {
+            note("NG   Activity#onCreate -> " + t);
+        }
+    }
+
+    static void dismissSharePanel() {
+        android.app.Dialog hit = null;
+        synchronized (dialogObjs) {
+            for (int i = dialogObjs.size() - 1; i >= 0; i--) {
+                android.app.Dialog d = dialogObjs.get(i);
+                try {
+                    android.view.Window wd = d.getWindow();
+                    android.view.View dv = wd == null ? null : wd.getDecorView();
+                    if (dv != null && findTextIn(dv, "微信") != null) {
+                        hit = d;
+                        break;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        if (hit == null) {
+            return;
+        }
+        try {
+            hit.dismiss();
+            log("自动分享：已关掉分享面板");
+        } catch (Throwable t) {
+            log("自动分享：关分享面板失败 " + t);
+        }
+    }
+
+    static android.content.Context appContext() {
+        if (appCtx != null) {
+            return appCtx;
+        }
+        try {
+            Object c = XposedHelpers.callStaticMethod(
+                    XposedHelpers.findClass("android.app.AndroidAppHelper", null), "currentApplication");
+            if (c instanceof android.content.Context) {
+                return (android.content.Context) c;
+            }
+        } catch (Throwable ignored) {
+        }
+        if (sTopAct != null) {
+            return sTopAct;
+        }
+        return null;
+    }
+
+    private static android.view.View findTextIn(android.view.View root, String want) {
+        if (root == null || !root.isShown()) {
+            return null;
+        }
+        if (root instanceof android.widget.TextView) {
+            CharSequence cs = ((android.widget.TextView) root).getText();
+            if (cs != null && want.contentEquals(cs)) {
+                return root;
+            }
+            return null;
+        }
+        if (root instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) root;
+            for (int i = g.getChildCount() - 1; i >= 0; i--) {
+                android.view.View r = findTextIn(g.getChildAt(i), want);
+                if (r != null) {
+                    return r;
+                }
+            }
+        }
+        return null;
+    }
+
+    static boolean panelShown(String text) {
+        if (text == null) {
+            return false;
+        }
+        synchronized (dialogRoots) {
+            for (int i = dialogRoots.size() - 1; i >= 0; i--) {
+                if (findTextIn(dialogRoots.get(i), text) != null) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    static boolean tapText(String want) {
+        java.util.List<android.view.View> roots = new java.util.ArrayList<android.view.View>();
+        android.app.Activity a = sTopAct;
+        android.view.View actRoot = (a == null || a.getWindow() == null) ? null : a.getWindow().getDecorView();
+        if (actRoot != null) {
+            roots.add(actRoot);
+        }
+        synchronized (dialogRoots) {
+            roots.addAll(dialogRoots);
+        }
+        for (int i = roots.size() - 1; i >= 0; i--) {
+            android.view.View tv = findTextIn(roots.get(i), want);
+            if (tv == null) {
+                continue;
+            }
+            android.view.View cur = tv;
+            for (int k = 0; k < 8 && cur != null; k++) {
+                if (cur.isClickable()) {
+                    cur.performClick();
+                    log("自动分享：点击「" + want + "」（按文字定位，不用坐标）");
+                    return true;
+                }
+                android.view.ViewParent par = cur.getParent();
+                cur = par instanceof android.view.View ? (android.view.View) par : null;
+            }
+            log("自动分享：找到「" + want + "」但父容器不可点");
+            return false;
+        }
+        return false;
+    }
+
+    static volatile boolean taskCenterOpened;
+
+    static void sharePollStart() {
+        final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+        final int[] n = {0};
+        final int[] taps = {0};
+        h.postDelayed(new Runnable() {
+            public void run() {
+                try {
+                    if (!"1".equals(conf().get("autoShare"))) {
+                        return;
+                    }
+                    if (panelShown("微信")) {
+                        log("自动分享：分享面板已出现");
+                        boolean hit = tapText("微信");
+                        if (!hit) {
+                            log("自动分享：面板里没点到微信，再试一次");
+                            h.postDelayed(this, 1200);
+                            return;
+                        }
+                        autoShareMarkToday();
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                dismissSharePanel();
+                                h.postDelayed(new Runnable() {
+                                    public void run() {
+                                        log("自动领取：分享完成，走原生接口领奖");
+                                        claimShareTask();
+                                    }
+                                }, 700);
+                            }
+                        }, 1800);
+                        return;
+                    }
+                    if (n[0] >= 30) {
+                        log("自动分享：等分享面板超时，放弃本次");
+                        return;
+                    }
+                    if (n[0] % 8 == 0 && taps[0] < 3) {
+                        taps[0]++;
+                        tapShareIcon();
+                    }
+                    n[0]++;
+                    h.postDelayed(this, 700);
+                } catch (Throwable t) {
+                    log("自动分享：轮询异常 " + t);
+                }
+            }
+        }, 1500);
+    }
+
+    static final java.util.Set<String> apiLogged =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
 
     static volatile String sUid, sDeviceId, sClientVer, sPlatformVer, sRegionx, sLoginCountry;
 

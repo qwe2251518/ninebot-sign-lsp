@@ -73,6 +73,7 @@ public class SettingsActivity extends Activity {
     private Switch fakeExpiryOn;
     private Switch bgOn;
     private Switch autoCheckOn;
+    private Switch apiLogSw;
     private Switch autoShareSw;
     private Switch fakeShareSw;
     private android.widget.EditText postIdIn;
@@ -529,6 +530,15 @@ public class SettingsActivity extends Activity {
             }
         });
         c4.addView(row(Glyph.INFO, "自动检测新版本", "每次打开九号时查一次 GitHub，有新版本就提一下", autoCheckOn));
+        apiLogSw = mkSwitch();
+        apiLogSw.setChecked("1".equals(sp().getString("apiLog", "0")));
+        apiLogSw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(android.widget.CompoundButton b, boolean c) {
+                sp().edit().putString("apiLog", c ? "1" : "0").commit();
+                save(true);
+            }
+        });
+        c4.addView(row(Glyph.INFO, "详细日志", "排查问题时打开，会把 H5 接口、图片节点都写进日志", apiLogSw));
         final TextView updNote = note("\u5f53\u524d\u7248\u672c " + VER);
         c4.addView(updNote);
         final TextView updBtn = mkButton("\u68c0\u6d4b\u66f4\u65b0", TINT, ACCENT, false);
@@ -734,6 +744,9 @@ public class SettingsActivity extends Activity {
         if (fakeExpiryOn != null) {
             fakeExpiryOn.setChecked("1".equals(p.getString("fakeExpiry", "0")));
         }
+        if (apiLogSw != null) {
+            apiLogSw.setChecked("1".equals(p.getString("apiLog", "0")));
+        }
         loading = false;
         updateVehStatus();
     }
@@ -833,6 +846,7 @@ public class SettingsActivity extends Activity {
         m.put("fakeShare", fakeShareSw != null && fakeShareSw.isChecked() ? "1" : "0");
         m.put("postId", postIdIn != null && postIdIn.getText().toString().trim().length() > 0 ? postIdIn.getText().toString().trim() : "22716571");
         m.put("fakeExpiry", fakeExpiryOn != null && fakeExpiryOn.isChecked() ? "1" : "0");
+        m.put("apiLog", apiLogSw != null && apiLogSw.isChecked() ? "1" : "0");
 
         String req = sp().getString("openDash", "");
         if (req != null && req.length() > 0) {

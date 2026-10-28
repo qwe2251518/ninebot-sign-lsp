@@ -24,7 +24,7 @@ public class ConfProvider extends ContentProvider {
 
             "fakeExpiry",
 
-            "autoShare", "fakeShare", "postId"};
+            "autoShare", "fakeShare", "postId", "apiLog"};
 
     public boolean onCreate() {
         return true;

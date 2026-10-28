@@ -48,6 +48,9 @@ public final class ConfText {
         sb.append("fakeShare=").append(on(m.get("fakeShare")) ? "1" : "0").append('\n');
         String pid0 = m.get("postId");
         sb.append("postId=").append(pid0 == null || pid0.trim().length() == 0 ? "22716571" : pid0.trim()).append('\n');
+        if (on(m.get("apiLog"))) {
+            sb.append("apiLog=1\n");
+        }
         return sb.toString();
     }
 
