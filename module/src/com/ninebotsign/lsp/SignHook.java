@@ -5602,7 +5602,7 @@ static String diagPost(String url, String body, String ctype) {
         }
     }
 
-    static final String MOD_VER = "3.0";
+    static final String MOD_VER = "3.1beta";
 
     static void autoCheckNewVersion() {
         try {
