@@ -4,9 +4,10 @@
 以及自动完成社区「分享」任务并领取当天的 N 币。
 
 - **实测**：2026-10-19 真机（小米 25102RKBEC，Android 16）跑通全部功能。
-- **适配版本**：九号出行 **6.10.11**（Segway Mobility，versionCode 610114116）。
-  版本更高时若闪退或功能异常，请降级回这一版。
-- **安装包**：到 [Releases](https://github.com/qwe2251518/ninebot-sign-lsp/releases) 下载 `NinebotSign.apk`。
+- **适配版本**：九号出行 **6.10.11**（Segway Mobility，versionCode 610114116）与 **6.6.8**（versionCode 606083576，易盾加固包）。
+  6.6.8 下模块会自动探测业务 ClassLoader 再补装 hook，签到、分享、领 N 币都实测跑通。
+  版本更高时若闪退或功能异常，请降级回这两版之一。
+- **安装包**：到 [Releases](https://github.com/qwe2251518/ninebot-sign-lsp/releases) 下载 `NinebotSign.apk`（3.0 起 asset 带版本号，如 `NinebotSign-3.1beta.apk`）。
 - **免责**：仅供学习交流，不破解任何付费内容，账号与设备风险自负。
 
 ## 使用说明
@@ -15,7 +16,7 @@
 
 - 手机已经 **root**（Magisk / KernelSU / SukiSU 等）
 - 已装 **LSPosed**（Zygisk 版）并能正常打开
-- 九号出行 App 是 **6.10.11** 这一版
+- 九号出行 App 是 **6.10.11** 或 **6.6.8** 这一版
 
 ### 安装
 
