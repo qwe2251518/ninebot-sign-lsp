@@ -5388,6 +5388,15 @@ static volatile boolean flowStarted;
                         flowStarted = true;
                         log("自动分享：新流程启动（等 " + n[0] + " 秒）");
                         openPostDirect(sTopAct);
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                try {
+                                    returnHome();
+                                } catch (Throwable t) {
+                                    log("自动分享：回主页失败 " + t);
+                                }
+                            }
+                        }, 14000);
                         return;
                     }
                 } catch (Throwable ignored) {
@@ -5398,6 +5407,40 @@ static volatile boolean flowStarted;
                 }
             }
         }, 2000);
+    }
+
+    static void returnHome() {
+        try {
+            android.content.Context ctx = appContext();
+            if (ctx == null) {
+                ctx = sTopAct;
+            }
+            android.app.Activity a = sTopAct;
+            if (a != null) {
+                String cn = a.getClass().getName();
+                if (cn.indexOf("WebActivity") >= 0 || cn.indexOf("NBReactActivity") >= 0) {
+                    try {
+                        a.finish();
+                    } catch (Throwable t) {
+                    }
+                }
+            }
+            if (ctx == null) {
+                return;
+            }
+            android.content.Intent in = ctx.getPackageManager()
+                    .getLaunchIntentForPackage(ctx.getPackageName());
+            if (in == null) {
+                return;
+            }
+            in.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                    | android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            ctx.startActivity(in);
+            log("自动分享：已完成，回到主页");
+        } catch (Throwable t) {
+            log("自动分享：回主页异常 " + t);
+        }
     }
 
     private static void openPostDirect(android.content.Context ctx) {

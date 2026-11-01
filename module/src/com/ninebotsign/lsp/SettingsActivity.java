@@ -56,7 +56,7 @@ public class SettingsActivity extends Activity {
     private static final int RED_TINT = 0x1FE64340;
     private static final int RED = 0xFFE64340;
 
-    private static final String VER = "3.1";
+    private static final String VER = "3.2";
 
     private static final String REPO = "https://github.com/qwe2251518/ninebot-sign-lsp";
 
