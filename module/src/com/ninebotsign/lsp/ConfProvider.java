@@ -18,6 +18,7 @@ public class ConfProvider extends ContentProvider {
     public static final String VEHICLE_SEGMENT = "vehicle";
 
     private static final String[] KEYS = {
+            "signEnabled", "dashFix", "openDash", "showEnergyOff",
             "vehicleImage", "vehicleImagePath", "vehicleImageStamp", "bgImage", "bgImagePath", "autoCheck",
 
             "showNitro",

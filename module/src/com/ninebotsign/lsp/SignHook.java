@@ -240,6 +240,18 @@ public class SignHook implements IXposedHookLoadPackage {
                                             log("API " + m + " " + clip(us, 300));
                                         }
                                     }
+                                    boolean want = us.indexOf("share-callback") >= 0
+                                            || us.indexOf("circle/v1/detail") >= 0
+                                            || us.indexOf("get-detail") >= 0;
+                                    if (want) {
+                                        String m = String.valueOf(XposedHelpers.callMethod(req, "method"));
+                                        String key = m + " " + us;
+                                        if (shareProbe.add(key)) {
+                                            log("SHAREAPI " + m + " " + clip(us, 400));
+                                            log("SHAREAPI   headers: " + clip(reqHeadersText(req), 1200));
+                                            log("SHAREAPI   body: " + clip(reqBodyText(req), 800));
+                                        }
+                                    }
                                 }
                             } catch (Throwable ignored) {
                             }
@@ -1654,6 +1666,25 @@ public class SignHook implements IXposedHookLoadPackage {
                 || s.indexOf(".jpg") >= 0;
     }
 
+    static Context ctx0() {
+        try {
+            if (appCtx != null) {
+                return appCtx;
+            }
+        } catch (Throwable t) {
+        }
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            java.lang.reflect.Method m = at.getMethod("currentApplication");
+            Object o = m.invoke(null);
+            if (o instanceof Context) {
+                return (Context) o;
+            }
+        } catch (Throwable t) {
+        }
+        return null;
+    }
+
     static boolean vehImgEnabled() {
         long now = System.currentTimeMillis();
         if (now - vehConfAt > 5000L) {
@@ -1661,9 +1692,11 @@ public class SignHook implements IXposedHookLoadPackage {
             boolean on = false;
             String path = null;
             String stamp = null;
+            int csize = 0;
             try {
 
                 Map<String, String> c = conf();
+                csize = (c == null ? 0 : c.size());
                 on = confOn("vehicleImage", false);
                 path = c.get("vehicleImagePath");
                 stamp = c.get("vehicleImageStamp");
@@ -1685,12 +1718,98 @@ public class SignHook implements IXposedHookLoadPackage {
                     src = vehicleFromManual(path);
                 }
             }
+            if (on && src == null) {
+                try {
+                    Context c0 = ctx0();
+                    if (c0 != null) {
+                        File hint = new File(c0.getFilesDir(), "vehicle-hint.txt");
+                        if (hint.exists() && hint.length() > 0L) {
+                            BufferedReader hr = new BufferedReader(
+                                    new InputStreamReader(new FileInputStream(hint), "UTF-8"));
+                            String hp = hr.readLine();
+                            hr.close();
+                            if (hp != null && hp.length() > 2 && new File(hp).exists()) {
+                                src = hp;
+                            }
+                        }
+                    }
+                } catch (Throwable t2) {
+                }
+            }
+            if (on && src == null) {
+                File d0 = dataDir();
+                if (d0 != null) {
+                    String best = null;
+                    long bestAt = 0L;
+                    File[] fs = d0.listFiles();
+                    if (fs != null) {
+                        for (int i = 0; i < fs.length; i++) {
+                            String nm = fs[i].getName();
+                            if (nm.startsWith("vehicle-") && nm.endsWith(".png")
+                                    && fs[i].length() > 0L && fs[i].lastModified() >= bestAt) {
+                                bestAt = fs[i].lastModified();
+                                best = fs[i].getAbsolutePath();
+                            }
+                        }
+                    }
+                    if (best != null) {
+                        src = best;
+                    }
+                }
+            }
+            if (!on && csize == 0) {
+                try {
+                    Context c2 = ctx0();
+                    if (c2 != null) {
+                        File hint3 = new File(c2.getFilesDir(), "vehicle-hint.txt");
+                        if (hint3.exists() && hint3.length() > 0L) {
+                            BufferedReader hr2 = new BufferedReader(
+                                    new InputStreamReader(new FileInputStream(hint3), "UTF-8"));
+                            String hp2 = hr2.readLine();
+                            hr2.close();
+                            if (hp2 != null && hp2.length() > 2 && new File(hp2).exists()) {
+                                on = true;
+                                src = hp2;
+                            }
+                        }
+                    }
+                } catch (Throwable t4) {
+                }
+            }
+            if (!on && csize == 0) {
+                File d1 = dataDir();
+                if (d1 != null) {
+                    File[] fs1 = d1.listFiles();
+                    if (fs1 != null) {
+                        for (int i = 0; i < fs1.length; i++) {
+                            String nm = fs1[i].getName();
+                            if (nm.startsWith("vehicle-") && nm.endsWith(".png") && fs1[i].length() > 0L) {
+                                on = true;
+                                src = fs1[i].getAbsolutePath();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             String key = (stamp == null ? "" : stamp) + "|" + path + "|" + on;
             if (!key.equals(vehSrcPath)) {
                 vehSrcPath = key;
                 log("车辆图配置：开关=" + (on ? "开" : "关")
                         + "  用图=" + (src == null ? "(没有)" : src)
                         + (apiProbeOn() ? ("  " + confDiag()) : ""));
+            }
+            if (on && src != null && src.length() > 2) {
+                try {
+                    Context c1 = ctx0();
+                    if (c1 != null) {
+                        File hint2 = new File(c1.getFilesDir(), "vehicle-hint.txt");
+                        FileOutputStream ho = new FileOutputStream(hint2, false);
+                        ho.write(src.getBytes("UTF-8"));
+                        ho.close();
+                    }
+                } catch (Throwable t3) {
+                }
             }
             vehImgOn = on;
             vehImgPath = src;
@@ -1837,6 +1956,35 @@ public class SignHook implements IXposedHookLoadPackage {
         return confOn("apiLog", false);
     }
 
+    /** 请求头整体文本（用于排查接口到底要哪些头） */
+    static String reqHeadersText(Object req) {
+        try {
+            Object h = XposedHelpers.callMethod(req, "headers");
+            return h == null ? "" : String.valueOf(h).replace("\n", " | ");
+        } catch (Throwable t) {
+            return "(headers err " + t + ")";
+        }
+    }
+
+    /** 请求体文本（okhttp RequestBody → okio Buffer） */
+    static String reqBodyText(Object req) {
+        try {
+            Object body = XposedHelpers.callMethod(req, "body");
+            if (body == null) {
+                return "(no body)";
+            }
+            Class<?> bufCls = tryLoad("okio.Buffer");
+            if (bufCls == null) {
+                return "(no okio)";
+            }
+            Object buf = bufCls.getDeclaredConstructor().newInstance();
+            XposedHelpers.callMethod(body, "writeTo", buf);
+            return String.valueOf(XposedHelpers.callMethod(buf, "readUtf8"));
+        } catch (Throwable t) {
+            return "(body err " + t + ")";
+        }
+    }
+
     static String confDiag() {
         StringBuilder sb = new StringBuilder();
         try {
@@ -1873,7 +2021,7 @@ public class SignHook implements IXposedHookLoadPackage {
     }
 
     static File dataDir() {
-        Context c = appCtx;
+        Context c = ctx0();
         if (c == null) {
             return null;
         }
@@ -2026,8 +2174,48 @@ public class SignHook implements IXposedHookLoadPackage {
         if (ui != null) {
             out.putAll(ui);
         }
-        confMap = out;
-        confAt = now;
+        if (out.size() == 0) {
+            try {
+                Context c9 = ctx0();
+                if (c9 != null) {
+                    File snap = new File(c9.getFilesDir(), "ninebot-conf-snapshot.txt");
+                    if (snap.exists() && snap.length() > 0L) {
+                        BufferedReader r9 = new BufferedReader(
+                                new InputStreamReader(new FileInputStream(snap), "UTF-8"));
+                        String l9;
+                        while ((l9 = r9.readLine()) != null) {
+                            putLine(out, l9);
+                        }
+                        r9.close();
+                    }
+                }
+            } catch (Throwable t9) {
+            }
+        } else {
+            try {
+                Context c8 = ctx0();
+                if (c8 != null) {
+                    StringBuilder sb8 = new StringBuilder();
+                    java.util.Iterator<String> it8 = out.keySet().iterator();
+                    while (it8.hasNext()) {
+                        String k8 = it8.next();
+                        sb8.append(k8).append('=').append(out.get(k8)).append('\n');
+                    }
+                    FileOutputStream fo8 = new FileOutputStream(
+                            new File(c8.getFilesDir(), "ninebot-conf-snapshot.txt"), false);
+                    fo8.write(sb8.toString().getBytes("UTF-8"));
+                    fo8.close();
+                }
+            } catch (Throwable t8) {
+            }
+        }
+        if (out.size() == 0) {
+            confMap = null;
+            confAt = 0L;
+        } else {
+            confMap = out;
+            confAt = now;
+        }
         return out;
     }
 
@@ -2068,7 +2256,19 @@ public class SignHook implements IXposedHookLoadPackage {
         return ConfText.build(m);
     }
 
+    static final String[] UI_KEYS = {"signEnabled", "vehicleImage", "vehicleImagePath",
+            "dashFix", "openDash", "autoShare", "fakeShare", "postId",
+            "showEnergyOff", "showNitro", "bgImage", "bgImagePath", "autoCheck"};
+
     static Map<String, String> uiPrefs() {
+        Map<String, String> m = uiPrefsX();
+        if (m != null) {
+            return m;
+        }
+        return uiPrefsSu();
+    }
+
+    static Map<String, String> uiPrefsX() {
         try {
             de.robv.android.xposed.XSharedPreferences p =
                     new de.robv.android.xposed.XSharedPreferences("com.ninebotsign.lsp", PREF);
@@ -2076,17 +2276,77 @@ public class SignHook implements IXposedHookLoadPackage {
             if (!"1".equals(p.getString("ui", ""))) {
                 return null;
             }
-            String[] keys = {"signEnabled", "vehicleImage", "vehicleImagePath",
-                    "dashFix", "openDash", "autoShare", "fakeShare", "postId",
-                    "showEnergyOff", "showNitro", "bgImage", "bgImagePath", "autoCheck"};
             Map<String, String> m = new java.util.LinkedHashMap<String, String>();
-            for (int i = 0; i < keys.length; i++) {
-                String v = p.getString(keys[i], "");
-                m.put(keys[i], v == null ? "" : v);
+            for (int i = 0; i < UI_KEYS.length; i++) {
+                String v = p.getString(UI_KEYS[i], "");
+                m.put(UI_KEYS[i], v == null ? "" : v);
             }
+            log("设置界面：XSharedPreferences 读到界面设置");
             return m;
         } catch (Throwable t) {
-            log("设置界面：读取失败 " + t);
+            log("设置界面：XSharedPreferences 读取失败 " + t);
+            return null;
+        }
+    }
+
+    static long suPrefsAt = 0L;
+    static boolean suPrefsFail = false;
+    static boolean suPrefsFailLogged = false;
+    static Map<String, String> suPrefsCache = null;
+
+    static Map<String, String> uiPrefsSu() {
+        long now = System.currentTimeMillis();
+        long ttl = suPrefsFail ? 60000L : 10000L;
+        if (now - suPrefsAt < ttl) {
+            return suPrefsCache;
+        }
+        suPrefsAt = now;
+        suPrefsCache = null;
+        suPrefsFail = false;
+        try {
+            java.lang.Process pr = Runtime.getRuntime().exec(new String[]{"su", "-c",
+                    "cat /data/data/com.ninebotsign.lsp/shared_prefs/ninebot_sign.xml"});
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(pr.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String ln;
+            while ((ln = br.readLine()) != null) {
+                sb.append(ln).append('\n');
+            }
+            br.close();
+            pr.waitFor();
+            String xml = sb.toString();
+            if (xml.length() == 0) {
+                return null;
+            }
+            Map<String, String> m = new java.util.LinkedHashMap<String, String>();
+            java.util.regex.Matcher sm = java.util.regex.Pattern
+                    .compile("<string name=\"([^\"]+)\">([^<]*)</string>").matcher(xml);
+            while (sm.find()) {
+                m.put(sm.group(1), sm.group(2));
+            }
+            java.util.regex.Matcher bm = java.util.regex.Pattern
+                    .compile("<boolean name=\"([^\"]+)\" value=\"(true|false)\" />").matcher(xml);
+            while (bm.find()) {
+                m.put(bm.group(1), "true".equals(bm.group(2)) ? "1" : "0");
+            }
+            if (!"1".equals(m.get("ui"))) {
+                return null;
+            }
+            Map<String, String> out = new java.util.LinkedHashMap<String, String>();
+            for (int i = 0; i < UI_KEYS.length; i++) {
+                String v = m.get(UI_KEYS[i]);
+                out.put(UI_KEYS[i], v == null ? "" : v);
+            }
+            log("设置界面：用 su 直读界面设置成功");
+            suPrefsCache = out;
+            return out;
+        } catch (Throwable t) {
+            suPrefsFail = true;
+            if (!suPrefsFailLogged) {
+                suPrefsFailLogged = true;
+                log("设置界面：su 直读不可用（本机不给应用 root），改用 conf 文件兜底");
+            }
             return null;
         }
     }
@@ -4701,6 +4961,130 @@ private static void findDb(java.io.File dir, java.util.List<java.io.File> out, i
         }
     }
 
+    static volatile boolean pvLoginTried;
+    static volatile boolean pvDigestHooked;
+
+    /** 诊断：抓 MessageDigest 的入参明文 + 结果（只关心带账号或 user/login 的输入），用来反推 passport 签名。 */
+    static void hookDigestDiag() {
+        if (pvDigestHooked) {
+            return;
+        }
+        pvDigestHooked = true;
+        try {
+            XposedBridge.hookAllMethods(java.security.MessageDigest.class, "digest", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    try {
+                        Object a0 = p.args == null || p.args.length == 0 ? null : p.args[0];
+                        if (!(a0 instanceof byte[])) {
+                            return;
+                        }
+                        String s = new String((byte[]) a0, "UTF-8");
+                        if (s.indexOf("15027055154") < 0 && s.indexOf("user/login") < 0) {
+                            return;
+                        }
+                        log("DIGEST.in(" + s.length() + ") " + s);
+                    } catch (Throwable ignored) {
+                    }
+                }
+
+                @Override
+                protected void afterHookedMethod(MethodHookParam p) {
+                    try {
+                        Object r = p.getResult();
+                        if (r instanceof byte[]) {
+                            StringBuilder sb = new StringBuilder();
+                            for (byte b : (byte[]) r) {
+                                sb.append(String.format("%02x", b));
+                            }
+                            log("DIGEST.out " + sb);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            log("DIGEST 诊断：已挂 MessageDigest#digest");
+        } catch (Throwable t) {
+            log("DIGEST 诊断失败 " + t);
+        }
+    }
+
+    /** 诊断：让宿主自己的 passport 走一次密码登录，账号密码从 files/nb-login.txt 读（不写进代码）。 */
+    static void triggerPassportLogin() {
+        if (pvLoginTried) {
+            return;
+        }
+        pvLoginTried = true;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    java.io.File dir = dataDir();
+                    if (dir == null) {
+                        log("PASSPORT 登录：dataDir 还没就绪");
+                        return;
+                    }
+                    java.io.File f = new java.io.File(dir, "nb-login.txt");
+                    if (!f.exists()) {
+                        log("PASSPORT 登录：没有 nb-login.txt");
+                        return;
+                    }
+                    String acc = null;
+                    String pwd = null;
+                    java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(new java.io.FileInputStream(f), "UTF-8"));
+                    String ln;
+                    while ((ln = br.readLine()) != null) {
+                        int i = ln.indexOf('=');
+                        if (i < 0) {
+                            continue;
+                        }
+                        String k = ln.substring(0, i).trim();
+                        String v = ln.substring(i + 1).trim();
+                        if ("account".equals(k)) {
+                            acc = v;
+                        } else if ("password".equals(k)) {
+                            pwd = v;
+                        }
+                    }
+                    br.close();
+                    if (acc == null || pwd == null) {
+                        log("PASSPORT 登录：文件里缺 account/password");
+                        return;
+                    }
+                    Class<?> c = tryLoad("cn.ninebot.lib.passport.account.PassportApiClient");
+                    Object inst = c == null ? null : XposedHelpers.callStaticMethod(c, "getInstance");
+                    if (inst == null) {
+                        log("PASSPORT 登录：没有实例");
+                        return;
+                    }
+                    log("PASSPORT 登录：开始 login(" + acc + ")");
+                    Object r = XposedHelpers.callMethod(inst, "login", acc, pwd);
+                    log("PASSPORT 登录：返回 " + clip(String.valueOf(r), 300));
+                    try {
+                        log("PASSPORT 登录：已订阅 " + XposedHelpers.callMethod(r, "subscribe"));
+                    } catch (Throwable t) {
+                        log("PASSPORT 登录：subscribe 失败 " + t);
+                    }
+                    try {
+                        Thread.sleep(8000);
+                    } catch (Throwable ignored) {
+                    }
+                    try {
+                        String at = String.valueOf(XposedHelpers.callMethod(inst, "getAccessToken"));
+                        String rt = String.valueOf(XposedHelpers.callMethod(inst, "getRefreshToken"));
+                        log("PASSPORT 登录后 accessToken len=" + at.length() + " refresh len=" + rt.length());
+                        log("PASSPORT accessToken=" + at);
+                        log("PASSPORT refreshToken=" + rt);
+                    } catch (Throwable t) {
+                        log("PASSPORT 登录后取 token 失败 " + t);
+                    }
+                } catch (Throwable t) {
+                    log("PASSPORT 登录异常 " + t);
+                }
+            }
+        }, "nb-login").start();
+    }
+
     private static void hookAutoShareFlow(ClassLoader cl) {
         startNewFlow();
         final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -4708,6 +5092,13 @@ private static void findDb(java.io.File dir, java.util.List<java.io.File> out, i
         h.postDelayed(new Runnable() {
             public void run() {
                 n[0]++;
+                try {
+                    if (n[0] >= 2 && !pvDigestHooked) {
+                        hookDigestDiag();
+                        triggerPassportLogin();
+                    }
+                } catch (Throwable ignored) {
+                }
                 try {
                     if (claimStarted) {
                         return;
@@ -5496,6 +5887,8 @@ private static volatile android.app.Activity sTopAct;
 
     static final java.util.Set<String> apiLogged =
             java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+    static final java.util.Set<String> shareProbe =
+            java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<String>());
 
     static volatile String sUid, sDeviceId, sClientVer, sPlatformVer, sRegionx, sLoginCountry;
 
